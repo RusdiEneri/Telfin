@@ -4,6 +4,8 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { formatRupiah, parseRupToInt, parseRupiah } from "../src/utils/money.js";
 import { ReceiptExtractionSchema } from "../src/validations/receipt.schema.js";
+import { logger } from "../src/utils/logger.js";
+import { cleanupPendingUploads } from "../src/services/receipt.service.js";
 
 console.log("▶ Running Telfin logic checks...");
 
@@ -208,14 +210,28 @@ console.log("✔ SQLite auto-migration passes");
 testDb.close();
 console.log("✔ SQLite transaction & balance flow passes");
 
-// 6. Check File Auto-cleanup on Failure
-const testUploadDir = path.join(process.cwd(), "uploads");
-if (!fs.existsSync(testUploadDir)) fs.mkdirSync(testUploadDir, { recursive: true });
-const dummyPath = path.join(testUploadDir, "dummy_failed_test.jpg");
-fs.writeFileSync(dummyPath, "test content");
-assert.equal(fs.existsSync(dummyPath), true);
-fs.unlinkSync(dummyPath);
-assert.equal(fs.existsSync(dummyPath), false, "Failed file must be unlinked");
-console.log("✔ Upload cleanup logic passes");
+// 6. Check Production Logger Error Writing
+const originalEnv = process.env.NODE_ENV;
+process.env.NODE_ENV = "production";
+const errorLogPath = path.join(process.cwd(), "data", "error.log");
+if (fs.existsSync(errorLogPath)) fs.unlinkSync(errorLogPath);
+
+logger.error("Test fatal error logging in production");
+assert.equal(fs.existsSync(errorLogPath), true, "error.log must be created in production");
+const logContent = fs.readFileSync(errorLogPath, "utf-8");
+assert.ok(logContent.includes("Test fatal error logging in production"));
+fs.unlinkSync(errorLogPath);
+process.env.NODE_ENV = originalEnv;
+console.log("✔ Production logger file output passes");
+
+// 7. Check Graceful Uploads Cleanup
+const uploadsDir = path.join(process.cwd(), "uploads");
+const hangingFile = path.join(uploadsDir, "temp_hanging_123.jpg");
+fs.writeFileSync(hangingFile, "hanging content");
+assert.equal(fs.existsSync(hangingFile), true);
+const cleanedCount = cleanupPendingUploads();
+assert.ok(cleanedCount >= 1, "Should clean at least 1 hanging file");
+assert.equal(fs.existsSync(hangingFile), false, "Hanging file should be removed");
+console.log("✔ Graceful shutdown cleanupPendingUploads passes");
 
 console.log("🎉 All checks passed successfully!");
