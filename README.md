@@ -16,7 +16,7 @@ Bot Telegram ringan untuk mencatat pemasukan dan pengeluaran secara otomatis dar
 ### 2. Setup Proyek di VPS
 Clone repositori dan pasang dependensi:
 ```bash
-git clone <url-repo-kamu> telfin
+git clone https://github.com/RusdiEneri/Telfin
 cd telfin
 npm install
 ```
