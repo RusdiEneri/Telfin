@@ -75,30 +75,22 @@ export async function handleStart(ctx: Context) {
 
   const welcomeText =
     `👋 Halo, *${user.name}*!\n\n` +
-    `Saya adalah bot pencatat keuangan otomatis dari foto nota / struk belanja 🧾.\n\n` +
-    `💰 *Saldo Saat Ini*: ${formatRupiah(balance)}\n\n` +
-    `📌 *Cara Penggunaan*:\n` +
-    `1. Kirimkan foto nota/struk belanja Anda ke chat ini.\n` +
-    `2. AI akan mengekstrak nominal, toko, kategori, dan detailnya.\n` +
-    `3. Klik tombol *Konfirmasi* untuk memasukkan transaksi ke saldo.\n\n` +
-    `⚙️ *Perintah yang Tersedia*:\n` +
-    `• /dompet - Lihat daftar dompet & saldo\n` +
-    `• /setdefault <nama_dompet> - Ubah dompet utama\n` +
-    `• /expense <jumlah> <keterangan> - Catat pengeluaran manual\n` +
-    `• /income <jumlah> <keterangan> - Catat pemasukan manual\n` +
-    `• /rekap [MM-YYYY] - Ringkasan bulanan & kategori terbesar\n` +
-    `• /saldo - Cek saldo dompet & ringkasan\n` +
-    `• /riwayat - Lihat 5 transaksi terakhir\n` +
-    `• /cari <kata_kunci> - Cari riwayat transaksi\n` +
-    `• /anggaran <kategori> <nominal> - Pasang batas anggaran bulanan\n` +
-    `• /cekanggaran - Cek kuota & penggunaan anggaran\n` +
-    `• /langganan - Kelola tagihan rutin & langganan\n` +
-    `• /edit <id> <jumlah> <keterangan> - Edit transaksi\n` +
-    `• /hapus <id> - Hapus transaksi\n` +
-    `• /export - Ekspor transaksi ke file CSV\n` +
-    `• /backup - Unduh file backup database .db\n` +
-    `• /restore - Pulihkan database dari file .db\n` +
-    `• /help - Panduan lengkap`;
+    `Selamat datang di *Telfin*, asisten pintar pencatat keuangan pribadi Anda 🧾✨\n\n` +
+    `💰 *Saldo Dompet Saat Ini*: *${formatRupiah(balance)}*\n\n` +
+    `📸 *Cara Paling Praktis:*\n` +
+    `Cukup *kirimkan foto nota/struk belanja* ke chat ini! AI akan otomatis membaca nominal belanja, toko, dan tanggalnya.\n\n` +
+    `✏️ *Catat Manual Cepat*:\n` +
+    `• Pengeluaran: \`/expense 25000 makan siang\`\n` +
+    `• Pemasukan: \`/income 1500000 gaji bulanan\`\n\n` +
+    `📊 *Pantau Keuangan*:\n` +
+    `• \`/saldo\` — Cek sisa saldo & uang keluar/masuk\n` +
+    `• \`/riwayat\` — Lihat 5 transaksi terakhir\n` +
+    `• \`/rekap\` — Laporan & grafik pengeluaran bulanan\n\n` +
+    `⚙️ *Fitur Lainnya*:\n` +
+    `• \`/anggaran\` — Pasang batas belanja agar tidak boros\n` +
+    `• \`/langganan\` — Pengingat tagihan rutin (kos/Netflix/dll)\n` +
+    `• \`/dompet\` — Kelola dompet (Cash, Bank, e-Wallet)\n` +
+    `• \`/help\` — Panduan lengkap semua perintah`;
 
   await ctx.reply(welcomeText, { parse_mode: "Markdown" });
 }
@@ -107,7 +99,13 @@ export async function handleExpense(ctx: Context) {
   const match = ctx.match as string | undefined;
   if (!match || !match.trim()) {
     await ctx.reply(
-      "❌ Format salah.\n\nContoh penggunaan:\n`/expense 50000 makan siang`",
+      "💡 *Cara Mencatat Pengeluaran:*\n\n" +
+      "Ketik nominal belanja diikuti keterangannya.\n\n" +
+      "*Format*: `/expense <nominal> <keterangan>`\n" +
+      "*Contoh*:\n" +
+      "• `/expense 50000 makan siang`\n" +
+      "• `/expense 25.000 kopi susu`\n" +
+      "• `/expense 150k bensin motor`",
       { parse_mode: "Markdown" }
     );
     return;
@@ -120,7 +118,9 @@ export async function handleExpense(ctx: Context) {
 
   if (!amount || !note) {
     await ctx.reply(
-      "❌ Format salah.\n\nContoh penggunaan:\n`/expense 50000 makan siang`",
+      "💡 *Keterangan belanja belum diisi.*\n\n" +
+      "Ketik nominal belanja dan keterangannya.\n" +
+      "*Contoh*: `/expense 50000 makan siang`",
       { parse_mode: "Markdown" }
     );
     return;
@@ -133,13 +133,18 @@ export async function handleExpense(ctx: Context) {
   const { balance } = getWalletBalance(walletId);
   const defaultWallet = getWalletById(walletId);
 
-  const replyText =
+  let replyText =
     `✅ *Pengeluaran Berhasil Dicatat!*\n\n` +
     `🔴 *Nominal*: ${formatRupiah(amount)}\n` +
     `📝 *Keterangan*: ${note}\n` +
     `📅 *Waktu*: ${formatDateTimeJakarta(new Date())}\n` +
     `💳 *Dompet*: ${defaultWallet?.name || "Dompet Utama"}\n\n` +
-    `💰 *Saldo Saat Ini*: *${formatRupiah(balance)}*`;
+    `💰 *Sisa Saldo*: *${formatRupiah(balance)}*`;
+
+  const budgetWarning = checkBudgetWarning(walletId, note, amount, getCurrentYearMonthJakarta());
+  if (budgetWarning.isOverbudget && budgetWarning.category) {
+    replyText += `\n\n⚠️ *PERINGATAN*: Pengeluaran ini telah melebihi batas anggaran kategori *${budgetWarning.category}*!`;
+  }
 
   await ctx.reply(replyText, { parse_mode: "Markdown" });
 }
@@ -148,7 +153,13 @@ export async function handleIncome(ctx: Context) {
   const match = ctx.match as string | undefined;
   if (!match || !match.trim()) {
     await ctx.reply(
-      "❌ Format salah.\n\nContoh penggunaan:\n`/income 1500000 gaji`",
+      "💡 *Cara Mencatat Pemasukan:*\n\n" +
+      "Ketik nominal uang masuk diikuti sumbernya.\n\n" +
+      "*Format*: `/income <nominal> <sumber/keterangan>`\n" +
+      "*Contoh*:\n" +
+      "• `/income 1500000 gaji bulanan`\n" +
+      "• `/income 200.000 transfer teman`\n" +
+      "• `/income 500k penjualan online`",
       { parse_mode: "Markdown" }
     );
     return;
@@ -161,7 +172,9 @@ export async function handleIncome(ctx: Context) {
 
   if (!amount || !note) {
     await ctx.reply(
-      "❌ Format salah.\n\nContoh penggunaan:\n`/income 1500000 gaji`",
+      "💡 *Sumber pemasukan belum diisi.*\n\n" +
+      "Ketik nominal uang masuk dan sumbernya.\n" +
+      "*Contoh*: `/income 1500000 gaji bulanan`",
       { parse_mode: "Markdown" }
     );
     return;
@@ -255,11 +268,13 @@ export async function handleSaldo(ctx: Context) {
   const currentWallet = getWalletById(walletId);
 
   const text =
-    `📊 *Ringkasan Dompet: ${currentWallet?.name || "Utama"}*\n\n` +
-    `💰 *Saldo*: ${formatRupiah(balance)}\n` +
-    `📈 *Total Pemasukan*: ${formatRupiah(totalIncome)}\n` +
-    `📉 *Total Pengeluaran*: ${formatRupiah(totalExpense)}\n\n` +
-    `💡 _Ketik_ \`/dompet\` _untuk melihat semua dompet._`;
+    `💰 *Informasi Saldo: ${currentWallet?.name || "Dompet Utama"}*\n\n` +
+    `💵 *Sisa Saldo*: *${formatRupiah(balance)}*\n` +
+    `🟢 *Total Uang Masuk*: ${formatRupiah(totalIncome)}\n` +
+    `🔴 *Total Uang Keluar*: ${formatRupiah(totalExpense)}\n\n` +
+    `💡 _Tips_:\n` +
+    `• Ketik \`/rekap\` untuk melihat grafik pengeluaran bulan ini.\n` +
+    `• Ketik \`/dompet\` untuk melihat daftar seluruh dompet Anda.`;
 
   await ctx.reply(text, { parse_mode: "Markdown" });
 }
@@ -283,7 +298,7 @@ export function formatTransactionDetail(tx: {
     `💵 *Nominal*: *${formatRupiah(tx.amount)}*`,
   ];
 
-  if (tx.merchant) lines.push(`🏪 *Merchant*: ${tx.merchant}`);
+  if (tx.merchant) lines.push(`🏪 *Toko/Merchant*: ${tx.merchant}`);
   if (tx.category) lines.push(`📂 *Kategori*: ${tx.category}`);
   lines.push(`📅 *Waktu*: ${dateFormatted}`);
   if (tx.note) lines.push(`📝 *Keterangan*: ${tx.note}`);
@@ -297,11 +312,16 @@ export async function handleRiwayat(ctx: Context) {
   const transactions = getRecentTransactions(walletId, 5);
 
   if (transactions.length === 0) {
-    await ctx.reply("Belum ada transaksi yang tersimpan. Kirim foto nota Anda untuk memulai!");
+    await ctx.reply(
+      "📭 *Belum Ada Transaksi*\n\n" +
+      "Anda belum memiliki catatan transaksi.\n" +
+      "Kirimkan foto nota belanja atau ketik `/expense 25000 makan siang` untuk mulai mencatat!",
+      { parse_mode: "Markdown" }
+    );
     return;
   }
 
-  await ctx.reply("📜 *5 Transaksi Terakhir:*", { parse_mode: "Markdown" });
+  await ctx.reply("📜 *5 Transaksi Terakhir Anda:*\n_(Gunakan tombol di bawah transaksi untuk mengedit atau menghapus)_", { parse_mode: "Markdown" });
 
   for (const tx of transactions) {
     const text = formatTransactionDetail(tx);
@@ -318,7 +338,11 @@ export async function handleHapus(ctx: Context) {
 
   if (isNaN(id)) {
     await ctx.reply(
-      "❌ Format salah.\n\nContoh penggunaan:\n`/hapus 12`",
+      "💡 *Cara Menghapus Transaksi:*\n\n" +
+      "Sertakan nomor ID transaksi yang ingin dihapus.\n\n" +
+      "*Format*: `/hapus <nomor_id>`\n" +
+      "*Contoh*: `/hapus 12`\n\n" +
+      "ℹ️ _Nomor ID dapat dilihat pada daftar_ `/riwayat`",
       { parse_mode: "Markdown" }
     );
     return;
@@ -341,14 +365,22 @@ export async function handleHapus(ctx: Context) {
   }
 
   softDeleteTransaction(id, tx.wallet_id);
-  await ctx.reply("Transaksi berhasil dihapus. Saldo telah diperbarui.");
+  await ctx.reply(
+    `✅ *Transaksi [#${id}] Berhasil Dihapus*\n\n` +
+    `Nominal transaksi telah dikembalikan dan saldo dompet sudah disesuaikan.`,
+    { parse_mode: "Markdown" }
+  );
 }
 
 export async function handleEdit(ctx: Context) {
   const match = (ctx.match as string | undefined)?.trim();
   if (!match) {
     await ctx.reply(
-      "❌ Format salah.\n\nContoh penggunaan:\n`/edit 12 75000 makan malam di warteg`",
+      "💡 *Cara Mengedit Transaksi:*\n\n" +
+      "Sertakan nomor ID, nominal baru, dan keterangan baru.\n\n" +
+      "*Format*: `/edit <id> <nominal_baru> <keterangan_baru>`\n" +
+      "*Contoh*: `/edit 12 75000 makan malam di warteg`\n\n" +
+      "ℹ️ _Nomor ID dapat dilihat pada daftar_ `/riwayat`",
       { parse_mode: "Markdown" }
     );
     return;
@@ -357,7 +389,11 @@ export async function handleEdit(ctx: Context) {
   const parts = match.split(/\s+/);
   if (parts.length < 3) {
     await ctx.reply(
-      "❌ Format salah.\n\nContoh penggunaan:\n`/edit 12 75000 makan malam di warteg`",
+      "💡 *Cara Mengedit Transaksi:*\n\n" +
+      "Sertakan nomor ID, nominal baru, dan keterangan baru.\n\n" +
+      "*Format*: `/edit <id> <nominal_baru> <keterangan_baru>`\n" +
+      "*Contoh*: `/edit 12 75000 makan malam di warteg`\n\n" +
+      "ℹ️ _Nomor ID dapat dilihat pada daftar_ `/riwayat`",
       { parse_mode: "Markdown" }
     );
     return;
@@ -369,7 +405,9 @@ export async function handleEdit(ctx: Context) {
 
   if (isNaN(id) || !amount || !note) {
     await ctx.reply(
-      "❌ Format salah.\n\nContoh penggunaan:\n`/edit 12 75000 makan malam di warteg`",
+      "💡 *Data edit belum lengkap.*\n\n" +
+      "*Format*: `/edit <id> <nominal_baru> <keterangan_baru>`\n" +
+      "*Contoh*: `/edit 12 75000 makan malam di warteg`",
       { parse_mode: "Markdown" }
     );
     return;
@@ -392,7 +430,13 @@ export async function handleEdit(ctx: Context) {
   }
 
   updateTransaction(id, tx.wallet_id, amount, note);
-  await ctx.reply("Transaksi berhasil diperbarui. Saldo telah diperbarui.");
+  await ctx.reply(
+    `✅ *Transaksi [#${id}] Berhasil Diperbarui*\n\n` +
+    `• Nominal baru: *${formatRupiah(amount)}*\n` +
+    `• Keterangan baru: ${note}\n\n` +
+    `Saldo dompet telah otomatis disesuaikan.`,
+    { parse_mode: "Markdown" }
+  );
 }
 
 export async function handleTextMessage(ctx: Context) {
@@ -482,7 +526,9 @@ export async function handleTextMessage(ctx: Context) {
 
   if (!amount || !note) {
     await ctx.reply(
-      "❌ Format salah.\n\nSilakan balas dengan format: `<nominal_baru> <keterangan_baru>`\nContoh: `75000 makan malam di warteg`",
+      "💡 *Format balasan belum tepat.*\n\n" +
+      "Silakan balas dengan format: `<nominal_baru> <keterangan_baru>`\n" +
+      "*Contoh*: `75000 makan malam di warteg`",
       { parse_mode: "Markdown" }
     );
     return;
@@ -505,37 +551,48 @@ export async function handleTextMessage(ctx: Context) {
   }
 
   updateTransaction(txId, tx.wallet_id, amount, note);
-  await ctx.reply("Transaksi berhasil diperbarui. Saldo telah diperbarui.");
+  await ctx.reply(
+    `✅ *Transaksi [#${txId}] Berhasil Diperbarui*\n\n` +
+    `• Nominal baru: *${formatRupiah(amount)}*\n` +
+    `• Keterangan baru: ${note}\n\n` +
+    `Saldo dompet telah otomatis disesuaikan.`,
+    { parse_mode: "Markdown" }
+  );
 }
 
 export async function handleHelp(ctx: Context) {
   const helpText =
-    `📖 *Panduan Penggunaan Bot*\n\n` +
-    `1. *Kirim Foto Nota*: Foto nota Anda, kirim ke chat ini. AI akan mengekstrak nominal secara otomatis.\n` +
-    `2. *Konfirmasi Transaksi*: Transaksi dari nota berstatus *pending*. Klik '✅ Konfirmasi' agar masuk ke saldo.\n` +
-    `3. *Batalkan*: Klik '❌ Batalkan' jika data salah atau nota tidak ingin dicatat.\n` +
-    `4. *Input Manual*: Catat transaksi tanpa foto dengan perintah manual.\n\n` +
-    `*Daftar Perintah*:\n` +
-    `• /dompet - Melihat daftar dompet dan saldo masing-masing\n` +
-    `• /setdefault <nama_dompet> - Mengatur dompet default / utama\n` +
-    `• /tambahdompet <nama_dompet> - Menambahkan dompet baru\n` +
-    `• /expense <jumlah> <keterangan> - Catat pengeluaran manual (contoh: /expense 50000 makan siang)\n` +
-    `• /income <jumlah> <keterangan> - Catat pemasukan manual (contoh: /income 1500000 gaji)\n` +
-    `• /rekap [MM-YYYY] - Ringkasan keuangan bulanan & top kategori (contoh: /rekap 09-2026)\n` +
-    `• /saldo - Menampilkan sisa saldo dan ringkasan dompet\n` +
-    `• /riwayat - Melihat daftar riwayat 5 transaksi terakhir\n` +
-    `• /cari <kata_kunci> - Cari transaksi berdasarkan merchant/keterangan (contoh: /cari indomaret)\n` +
-    `• /anggaran <kategori> <nominal> - Set batas anggaran per kategori (contoh: /anggaran makan 1500000)\n` +
-    `• /cekanggaran - Menampilkan pemakaian dan sisa kuota anggaran bulan ini\n` +
-    `• /langganan - Daftar tagihan rutin (langganan/kos/gaji)\n` +
-    `• /tambahlangganan <nama> <nominal> <tipe> <kategori> <tanggal> - Tambah tagihan rutin\n` +
-    `• /hapuslangganan <id> - Hapus tagihan rutin\n` +
-    `• /edit <id> <jumlah> <keterangan> - Edit transaksi (contoh: /edit 12 75000 makan malam)\n` +
-    `• /hapus <id> - Hapus transaksi berdasarkan ID (contoh: /hapus 12)\n` +
-    `• /export - Ekspor seluruh riwayat transaksi ke file .csv\n` +
-    `• /backup - Unduh file backup database .db\n` +
-    `• /restore - Pulihkan database dari file backup .db\n` +
-    `• /help - Menampilkan pesan panduan ini`;
+    `📖 *Panduan Lengkap Telfin*\n\n` +
+    `📸 *1. Catat dari Foto Nota*\n` +
+    `• Cukup kirimkan foto struk/nota belanja.\n` +
+    `• AI akan mendeteksi nama toko, total belanja, dan kategori.\n` +
+    `• Tekan tombol *✅ Konfirmasi* untuk menyimpan ke saldo.\n\n` +
+    `✏️ *2. Catat Manual (Ketik Cepat)*\n` +
+    `• \`/expense <nominal> <keterangan>\`\n` +
+    `  _Contoh_: \`/expense 50000 makan siang\`\n` +
+    `• \`/income <nominal> <keterangan>\`\n` +
+    `  _Contoh_: \`/income 1500000 gaji bulanan\`\n\n` +
+    `📊 *3. Cek Saldo & Riwayat*\n` +
+    `• \`/saldo\` — Cek sisa saldo & ringkasan uang masuk/keluar\n` +
+    `• \`/riwayat\` — Lihat 5 transaksi terakhir (bisa edit/hapus)\n` +
+    `• \`/rekap\` — Laporan & grafik pengeluaran per kategori\n` +
+    `• \`/cari <kata>\` — Cari transaksi (contoh: \`/cari bensin\`)\n` +
+    `• \`/export\` — Ekspor seluruh transaksi ke file Excel/CSV\n\n` +
+    `🎯 *4. Batas Anggaran Bulanan*\n` +
+    `• \`/anggaran <kategori> <nominal>\`\n` +
+    `  _Contoh_: \`/anggaran makan 1500000\`\n` +
+    `• \`/cekanggaran\` — Cek sisa kuota belanja bulan ini\n\n` +
+    `🔔 *5. Tagihan Rutin & Pengingat*\n` +
+    `• \`/langganan\` — Lihat daftar tagihan rutin aktif\n` +
+    `• \`/tambahlangganan <nama> <nominal> <tipe> <kategori> <tgl>\`\n` +
+    `  _Contoh_: \`/tambahlangganan Netflix 54000 expense hiburan 25\`\n` +
+    `• \`/hapuslangganan <id>\` — Hapus pengingat tagihan\n\n` +
+    `💳 *6. Dompet & Backup*\n` +
+    `• \`/dompet\` — Daftar semua dompet & saldo\n` +
+    `• \`/setdefault <nama>\` — Ganti dompet utama\n` +
+    `• \`/tambahdompet <nama>\` — Buat dompet baru (misal: Bank BCA)\n` +
+    `• \`/backup\` — Unduh file cadangan database .db\n` +
+    `• \`/restore\` — Pulihkan database dari file .db`;
 
   await ctx.reply(helpText, { parse_mode: "Markdown" });
 }
@@ -548,11 +605,14 @@ export async function handleDompet(ctx: Context) {
   let text = `💳 *Daftar Dompet Anda*:\n\n`;
   for (const w of wallets) {
     const { balance } = getWalletBalance(w.id);
-    const defaultBadge = w.is_default ? " ⭐ *(Utama)*" : "";
-    text += `• *${w.name}*${defaultBadge}\n  Saldo: ${formatRupiah(balance)}\n`;
+    const defaultBadge = w.is_default ? " ⭐ *(Dompet Utama)*" : "";
+    text += `• *${w.name}*${defaultBadge}\n  Saldo: *${formatRupiah(balance)}*\n`;
   }
-  text += `\n💡 _Gunakan_ \`/setdefault <nama_dompet>\` _untuk mengubah dompet utama._`;
-  text += `\n💡 _Gunakan_ \`/tambahdompet <nama_dompet>\` _untuk menambah dompet baru._`;
+  text += `\n───────────────────\n`;
+  text += `💡 *Perintah Dompet*:\n`;
+  text += `• \`/setdefault <nama_dompet>\` — Ganti dompet utama\n`;
+  text += `• \`/tambahdompet <nama_dompet>\` — Tambah dompet baru\n`;
+  text += `\n*Contoh*: \`/tambahdompet Bank BCA\` atau \`/setdefault Bank BCA\``;
 
   await ctx.reply(text, { parse_mode: "Markdown" });
 }
@@ -561,7 +621,13 @@ export async function handleSetDefault(ctx: Context) {
   const match = ctx.match as string | undefined;
   if (!match || !match.trim()) {
     await ctx.reply(
-      "❌ Format salah.\n\nContoh penggunaan:\n`/setdefault Dompet Utama`\n`/setdefault Bank BCA`",
+      "💡 *Cara Mengubah Dompet Utama:*\n\n" +
+      "Ketik nama dompet yang ingin dijadikan sebagai dompet utama.\n\n" +
+      "*Format*: `/setdefault <nama_dompet>`\n" +
+      "*Contoh*:\n" +
+      "• `/setdefault Dompet Utama`\n" +
+      "• `/setdefault Bank BCA`\n\n" +
+      "ℹ️ _Ketik_ `/dompet` _untuk melihat daftar nama dompet Anda._",
       { parse_mode: "Markdown" }
     );
     return;
@@ -574,7 +640,7 @@ export async function handleSetDefault(ctx: Context) {
   const result = setDefaultWallet(userId, walletName);
   if (!result.success || !result.wallet) {
     await ctx.reply(
-      `❌ Dompet "${walletName}" tidak ditemukan. Cek daftar dompet Anda dengan /dompet.`,
+      `❌ Dompet "*${walletName}*" tidak ditemukan.\nKetik \`/dompet\` untuk melihat daftar dompet Anda.`,
       { parse_mode: "Markdown" }
     );
     return;
@@ -590,7 +656,13 @@ export async function handleTambahDompet(ctx: Context) {
   const match = ctx.match as string | undefined;
   if (!match || !match.trim()) {
     await ctx.reply(
-      "❌ Format salah.\n\nContoh penggunaan:\n`/tambahdompet Bank BCA`\n`/tambahdompet Gopay`",
+      "💡 *Cara Menambahkan Dompet Baru:*\n\n" +
+      "Ketik nama dompet yang ingin dibuat.\n\n" +
+      "*Format*: `/tambahdompet <nama_dompet>`\n" +
+      "*Contoh*:\n" +
+      "• `/tambahdompet Bank BCA`\n" +
+      "• `/tambahdompet Gopay`\n" +
+      "• `/tambahdompet Tabungan`",
       { parse_mode: "Markdown" }
     );
     return;
@@ -621,7 +693,13 @@ export async function handleCari(ctx: Context) {
   const match = (ctx.match as string | undefined)?.trim();
   if (!match) {
     await ctx.reply(
-      "❌ Format salah.\n\nContoh penggunaan:\n`/cari indomaret`\n`/cari bensin`",
+      "💡 *Cara Mencari Riwayat Transaksi:*\n\n" +
+      "Ketik kata kunci nama toko, barang, atau keterangan transaksi.\n\n" +
+      "*Format*: `/cari <kata_kunci>`\n" +
+      "*Contoh*:\n" +
+      "• `/cari indomaret`\n" +
+      "• `/cari bensin`\n" +
+      "• `/cari kopi`",
       { parse_mode: "Markdown" }
     );
     return;
@@ -632,7 +710,11 @@ export async function handleCari(ctx: Context) {
 
   const results = searchTransactions(userId, match, 10);
   if (results.length === 0) {
-    await ctx.reply("🔍 Tidak ditemukan transaksi dengan kata kunci tersebut.");
+    await ctx.reply(
+      `🔍 Tidak ditemukan transaksi dengan kata kunci "*${match}*".\n` +
+      `Coba gunakan kata kunci yang lebih singkat atau umum.`,
+      { parse_mode: "Markdown" }
+    );
     return;
   }
 
@@ -653,7 +735,11 @@ export async function handleExport(ctx: Context) {
 
     const transactions = getAllConfirmedTransactions(userId);
     if (transactions.length === 0) {
-      await ctx.reply("⚠️ Belum ada transaksi yang berstatus confirmed untuk diekspor.");
+      await ctx.reply(
+        "📭 *Belum Ada Data Transaksi*\n\n" +
+        "Belum ada catatan transaksi yang bisa diekspor.",
+        { parse_mode: "Markdown" }
+      );
       return;
     }
 
@@ -663,11 +749,15 @@ export async function handleExport(ctx: Context) {
     const fileName = `export_telfin_${dateStr}.csv`;
 
     await ctx.replyWithDocument(new InputFile(buffer, fileName), {
-      caption: `✅ Berhasil mengekspor ${transactions.length} transaksi ke file CSV.`,
+      caption:
+        `📊 *Ekspor Data Berhasil!*\n\n` +
+        `Total *${transactions.length}* transaksi berhasil diekspor ke file CSV.\n` +
+        `File ini dapat dibuka langsung di Excel, Google Sheets, atau aplikasi spreadsheet lainnya.`,
+      parse_mode: "Markdown",
     });
   } catch (err: any) {
     logger.error("Gagal melakukan export transaksi:", err);
-    await ctx.reply("❌ Gagal mengekspor transaksi.");
+    await ctx.reply("❌ Gagal mengekspor data transaksi. Silakan coba lagi.");
   }
 }
 
@@ -675,7 +765,14 @@ export async function handleAnggaran(ctx: Context) {
   const match = (ctx.match as string | undefined)?.trim();
   if (!match) {
     await ctx.reply(
-      "❌ Format salah.\n\nContoh penggunaan:\n`/anggaran makan 1500000`\n`/anggaran nongkrong 500000`",
+      "💡 *Cara Mengatur Batas Anggaran Bulanan:*\n\n" +
+      "Tentukan kategori dan nominal maksimal belanja untuk bulan ini.\n\n" +
+      "*Format*: `/anggaran <kategori> <nominal>`\n" +
+      "*Contoh*:\n" +
+      "• `/anggaran makan 1500000`\n" +
+      "• `/anggaran nongkrong 500000`\n" +
+      "• `/anggaran bensin 300000`\n\n" +
+      "ℹ️ _Ketik_ `/cekanggaran` _untuk melihat status pemakaian._",
       { parse_mode: "Markdown" }
     );
     return;
@@ -684,7 +781,12 @@ export async function handleAnggaran(ctx: Context) {
   const parts = match.split(/\s+/);
   if (parts.length < 2) {
     await ctx.reply(
-      "❌ Format salah.\n\nContoh penggunaan:\n`/anggaran makan 1500000`\n`/anggaran nongkrong 500000`",
+      "💡 *Cara Mengatur Batas Anggaran Bulanan:*\n\n" +
+      "Tentukan kategori dan nominal maksimal belanja untuk bulan ini.\n\n" +
+      "*Format*: `/anggaran <kategori> <nominal>`\n" +
+      "*Contoh*:\n" +
+      "• `/anggaran makan 1500000`\n" +
+      "• `/anggaran nongkrong 500000`",
       { parse_mode: "Markdown" }
     );
     return;
@@ -696,7 +798,8 @@ export async function handleAnggaran(ctx: Context) {
 
   if (!amount || !category) {
     await ctx.reply(
-      "❌ Format nominal atau kategori tidak valid.\n\nContoh penggunaan:\n`/anggaran makan 1500000`",
+      "💡 *Nominal atau kategori belum sesuai.*\n\n" +
+      "*Contoh*: `/anggaran makan 1500000`",
       { parse_mode: "Markdown" }
     );
     return;
@@ -709,7 +812,10 @@ export async function handleAnggaran(ctx: Context) {
   setBudget(walletId, category, amount, monthYear);
 
   await ctx.reply(
-    `✅ Anggaran kategori *${category}* bulan ini diset sebesar *${formatRupiah(amount)}*.`,
+    `✅ *Batas Anggaran Berhasil Disetel!*\n\n` +
+    `📂 *Kategori*: ${category}\n` +
+    `🎯 *Batas Maksimal*: *${formatRupiah(amount)}* / bulan\n\n` +
+    `Bot akan memberi peringatan jika belanja Anda di kategori ini sudah melebihi batas.`,
     { parse_mode: "Markdown" }
   );
 }
@@ -722,9 +828,11 @@ export async function handleCekAnggaran(ctx: Context) {
   const budgets = getBudgetReport(walletId, monthYear);
   if (budgets.length === 0) {
     await ctx.reply(
-      `📊 *Anggaran Bulan Ini (${monthYear})*\n\n` +
-      `Belum ada anggaran yang disetel untuk bulan ini.\n` +
-      `Gunakan \`/anggaran <kategori> <nominal>\` untuk membuat anggaran baru.`,
+      `📊 *Status Anggaran Bulan Ini (${monthYear})*\n\n` +
+      `Belum ada batas anggaran yang disetel untuk bulan ini.\n\n` +
+      `💡 *Cara membuat batas anggaran*:\n` +
+      `Ketik \`/anggaran <kategori> <nominal>\`\n` +
+      `*Contoh*: \`/anggaran makan 1500000\``,
       { parse_mode: "Markdown" }
     );
     return;
@@ -735,14 +843,14 @@ export async function handleCekAnggaran(ctx: Context) {
     const remaining = b.amount_limit - b.total_spent;
     const percentage = b.amount_limit > 0 ? Math.round((b.total_spent / b.amount_limit) * 100) : 0;
     const statusIcon = percentage > 100 ? "🔴" : percentage >= 80 ? "🟡" : "🟢";
-    const statusText = percentage > 100 ? " *(Overbudget!)*" : "";
+    const statusText = percentage > 100 ? " *(Overbudget / Boros!)*" : "";
 
     text += `${statusIcon} *${b.category}*${statusText}\n`;
     text += `  • Terpakai: ${formatRupiah(b.total_spent)} / ${formatRupiah(b.amount_limit)} (${percentage}%)\n`;
     if (remaining >= 0) {
-      text += `  • Sisa: ${formatRupiah(remaining)}\n\n`;
+      text += `  • Sisa Kuota: ${formatRupiah(remaining)}\n\n`;
     } else {
-      text += `  • Melebihi: ${formatRupiah(Math.abs(remaining))}\n\n`;
+      text += `  • Melebihi Batas: ${formatRupiah(Math.abs(remaining))}\n\n`;
     }
   }
 
@@ -759,11 +867,14 @@ export async function handleBackup(ctx: Context) {
     const fileName = `telfin_backup_${dateStr}.db`;
 
     await ctx.replyWithDocument(new InputFile(buffer, fileName), {
-      caption: "✅ Backup database berhasil dikirim. Simpan file ini di tempat aman.",
+      caption:
+        "✅ *Cadangan Database Berhasil Diunduh!*\n\n" +
+        "Simpan file `.db` ini di tempat aman. File ini berisi seluruh riwayat transaksi, dompet, anggaran, dan langganan Anda.",
+      parse_mode: "Markdown",
     });
   } catch (err: any) {
     logger.error("Gagal melakukan backup database:", err);
-    await ctx.reply("❌ Gagal membuat backup database.");
+    await ctx.reply("❌ Gagal membuat cadangan database.");
   }
 }
 
@@ -775,9 +886,16 @@ export async function handleRestore(ctx: Context) {
     return processRestoreDocument(ctx, doc);
   }
 
-  await ctx.reply("⚠️ Silakan balas pesan ini dengan mengunggah file backup .db Anda.", {
-    reply_markup: { force_reply: true },
-  });
+  await ctx.reply(
+    "📥 *Cara Memulihkan Database (Restore):*\n\n" +
+    "1. Siapkan file backup berformat `.db`.\n" +
+    "2. *Balas (reply)* pesan ini dengan melampirkan/mengirim file `.db` tersebut sebagai Document.\n\n" +
+    "⚠️ *Peringatan*: Seluruh data saat ini akan digantikan dengan data dari file cadangan yang diunggah.",
+    {
+      reply_markup: { force_reply: true },
+      parse_mode: "Markdown",
+    }
+  );
 }
 
 export async function handleDocument(ctx: Context) {
@@ -885,16 +1003,16 @@ export function formatReceiptPreview(
   const typeLabel = tx.type === "income" ? "🟢 Pemasukan" : "🔴 Pengeluaran";
   const timeStr = formatDateTimeJakarta(tx.occurred_at || new Date());
   return (
-    `🧾 *Preview Transaksi Nota*\n\n` +
+    `🧾 *Hasil Pembacaan Struk / Nota*\n\n` +
     `🏷️ *Tipe*: ${typeLabel}\n` +
     `💵 *Nominal*: *${formatRupiah(tx.amount)}*\n` +
-    `🏪 *Merchant*: ${tx.merchant || "-"}\n` +
+    `🏪 *Toko / Merchant*: ${tx.merchant || "-"}\n` +
     `📂 *Kategori*: ${tx.category || "-"}\n` +
     `📅 *Waktu*: ${timeStr}\n` +
     (tx.note ? `📝 *Catatan*: _${tx.note}_\n` : "") +
     `Akan dicatat ke: 💳 *${walletName}*\n\n` +
-    `⚠️ *Status: Menunggu Konfirmasi*\n` +
-    `Klik tombol di bawah untuk menyimpan transaksi ke saldo Anda.`
+    `⚠️ *Status: Menunggu Konfirmasi Anda*\n` +
+    `Silakan periksa data di atas, lalu tekan tombol konfirmasi di bawah:`
   );
 }
 
@@ -904,11 +1022,11 @@ export async function handlePhoto(ctx: Context) {
 
   const photos = ctx.message?.photo;
   if (!photos || photos.length === 0) {
-    await ctx.reply("Foto tidak terdeteksi. Silakan kirim ulang foto nota.");
+    await ctx.reply("Foto tidak terdeteksi. Silakan kirimkan foto nota yang jelas.");
     return;
   }
 
-  const statusMsg = await ctx.reply("⏳ _Sedang mengunduh foto & membaca nota dengan AI..._", {
+  const statusMsg = await ctx.reply("⏳ _Sedang membaca struk/nota belanja Anda dengan AI... Mohon tunggu sebentar._", {
     parse_mode: "Markdown",
   });
 
@@ -937,7 +1055,8 @@ export async function handlePhoto(ctx: Context) {
       await ctx.api.editMessageText(
         ctx.chat!.id,
         statusMsg.message_id,
-        "⚠️ Nota ini sudah pernah dicatat sebelumnya. Transaksi dibatalkan."
+        "⚠️ *Foto Nota Pernah Dicatat*\n\nNota ini sudah ada di catatan keuangan Anda sebelumnya. Untuk mencegah pencatatan ganda, transaksi ini tidak diproses ulang.",
+        { parse_mode: "Markdown" }
       );
       return;
     }
@@ -1327,9 +1446,15 @@ export async function handleTambahLangganan(ctx: Context) {
   const parts = match.trim().split(/\s+/);
   if (parts.length < 5) {
     await ctx.reply(
-      "❌ Parameter kurang lengkap.\n\n" +
-      "Gunakan format: `/tambahlangganan <nama> <nominal> <tipe> <kategori> <tanggal(1-31)>`\n" +
-      "Contoh: `/tambahlangganan Netflix 50000 expense hiburan 25`",
+      "💡 *Cara Menambahkan Tagihan Rutin:*\n\n" +
+      "Daftarkan pengeluaran/pemasukan rutin agar bot otomatis mengingatkan setiap tanggal jatuh tempo.\n\n" +
+      "*Format*: `/tambahlangganan <nama> <nominal> <tipe> <kategori> <tanggal>`\n\n" +
+      "*Contoh Pengeluaran:*\n" +
+      "• `/tambahlangganan Netflix 54000 expense hiburan 25`\n" +
+      "• `/tambahlangganan Kos Bulanan 1500000 expense kos 1`\n\n" +
+      "*Contoh Pemasukan:*\n" +
+      "• `/tambahlangganan Gaji Kantor 8000000 income gaji 25`\n\n" +
+      "ℹ️ _Tipe berupa `expense` (pengeluaran) atau `income` (pemasukan), dan tanggal antara 1 sampai 31._",
       { parse_mode: "Markdown" }
     );
     return;
@@ -1394,7 +1519,11 @@ export async function handleHapusLangganan(ctx: Context) {
   const match = ctx.match as string | undefined;
   if (!match || !match.trim()) {
     await ctx.reply(
-      "❌ Format salah.\n\nGunakan format: `/hapuslangganan <id>`\nContoh: `/hapuslangganan 1`\nLihat daftar ID dengan `/langganan`.",
+      "💡 *Cara Menonaktifkan Tagihan Rutin:*\n\n" +
+      "Sertakan nomor ID tagihan yang ingin dinonaktifkan.\n\n" +
+      "*Format*: `/hapuslangganan <nomor_id>`\n" +
+      "*Contoh*: `/hapuslangganan 1`\n\n" +
+      "ℹ️ _Ketik_ `/langganan` _untuk melihat daftar nomor ID tagihan Anda._",
       { parse_mode: "Markdown" }
     );
     return;
