@@ -23,6 +23,9 @@ import {
   getRecentTransactions,
   findConfirmedTransactionByHash,
   getMonthlyRecap,
+  searchTransactions,
+  getAllConfirmedTransactions,
+  formatTransactionsCsv,
 } from "../services/transaction.service.js";
 import { saveUploadedBuffer, processReceiptFile } from "../services/receipt.service.js";
 import {
@@ -75,8 +78,10 @@ export async function handleStart(ctx: Context) {
     `• /rekap [MM-YYYY] - Ringkasan bulanan & kategori terbesar\n` +
     `• /saldo - Cek saldo dompet & ringkasan\n` +
     `• /riwayat - Lihat 5 transaksi terakhir\n` +
+    `• /cari <kata_kunci> - Cari riwayat transaksi\n` +
     `• /edit <id> <jumlah> <keterangan> - Edit transaksi\n` +
     `• /hapus <id> - Hapus transaksi\n` +
+    `• /export - Ekspor transaksi ke file CSV\n` +
     `• /backup - Unduh file backup database .db\n` +
     `• /restore - Pulihkan database dari file .db\n` +
     `• /help - Panduan lengkap`;
@@ -430,8 +435,10 @@ export async function handleHelp(ctx: Context) {
     `• /rekap [MM-YYYY] - Ringkasan keuangan bulanan & top kategori (contoh: /rekap 09-2026)\n` +
     `• /saldo - Menampilkan sisa saldo dan ringkasan dompet\n` +
     `• /riwayat - Melihat daftar riwayat 5 transaksi terakhir\n` +
+    `• /cari <kata_kunci> - Cari transaksi berdasarkan merchant/keterangan (contoh: /cari indomaret)\n` +
     `• /edit <id> <jumlah> <keterangan> - Edit transaksi (contoh: /edit 12 75000 makan malam)\n` +
     `• /hapus <id> - Hapus transaksi berdasarkan ID (contoh: /hapus 12)\n` +
+    `• /export - Ekspor seluruh riwayat transaksi ke file .csv\n` +
     `• /backup - Unduh file backup database .db\n` +
     `• /restore - Pulihkan database dari file backup .db\n` +
     `• /help - Menampilkan pesan panduan ini`;
@@ -514,6 +521,60 @@ export async function handleTambahDompet(ctx: Context) {
     `✅ Dompet *${newWallet.name}* berhasil dibuat.\n\nKetik /dompet untuk melihat daftar dompet.`,
     { parse_mode: "Markdown" }
   );
+}
+
+export async function handleCari(ctx: Context) {
+  const match = (ctx.match as string | undefined)?.trim();
+  if (!match) {
+    await ctx.reply(
+      "❌ Format salah.\n\nContoh penggunaan:\n`/cari indomaret`\n`/cari bensin`",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const user = getTelegramUser(ctx);
+  const { userId } = getOrCreateUserAndWallet(user.id, user.name);
+
+  const results = searchTransactions(userId, match, 10);
+  if (results.length === 0) {
+    await ctx.reply("🔍 Tidak ditemukan transaksi dengan kata kunci tersebut.");
+    return;
+  }
+
+  let text = `🔍 *Hasil Pencarian: "${match}"*\n\n`;
+  for (const tx of results) {
+    const date = tx.occurred_at || tx.created_at.slice(0, 10);
+    const merchant = tx.merchant || tx.note || "-";
+    text += `[#${tx.id}] ${date} | ${merchant} | ${formatRupiah(tx.amount)}\n`;
+  }
+
+  await ctx.reply(text.trim(), { parse_mode: "Markdown" });
+}
+
+export async function handleExport(ctx: Context) {
+  try {
+    const user = getTelegramUser(ctx);
+    const { userId } = getOrCreateUserAndWallet(user.id, user.name);
+
+    const transactions = getAllConfirmedTransactions(userId);
+    if (transactions.length === 0) {
+      await ctx.reply("⚠️ Belum ada transaksi yang berstatus confirmed untuk diekspor.");
+      return;
+    }
+
+    const csvString = formatTransactionsCsv(transactions);
+    const buffer = Buffer.from(csvString, "utf-8");
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const fileName = `export_telfin_${dateStr}.csv`;
+
+    await ctx.replyWithDocument(new InputFile(buffer, fileName), {
+      caption: `✅ Berhasil mengekspor ${transactions.length} transaksi ke file CSV.`,
+    });
+  } catch (err: any) {
+    logger.error("Gagal melakukan export transaksi:", err);
+    await ctx.reply("❌ Gagal mengekspor transaksi.");
+  }
 }
 
 export async function handleBackup(ctx: Context) {

@@ -341,3 +341,58 @@ export function getMonthlyRecap(walletId: number, yearMonth: string): MonthlyRec
     topCategories,
   };
 }
+
+export function searchTransactions(
+  userId: number,
+  keyword: string,
+  limit = 10
+): TransactionRecord[] {
+  const query = db.prepare(`
+    SELECT t.*
+    FROM transactions t
+    JOIN wallets w ON t.wallet_id = w.id
+    WHERE w.user_id = ? AND t.status = 'confirmed'
+      AND (t.merchant LIKE ? OR t.note LIKE ?)
+    ORDER BY t.id DESC
+    LIMIT ?
+  `);
+  const pattern = `%${keyword.trim()}%`;
+  return query.all(userId, pattern, pattern, limit) as TransactionRecord[];
+}
+
+export function getAllConfirmedTransactions(userId: number): TransactionRecord[] {
+  const query = db.prepare(`
+    SELECT t.*
+    FROM transactions t
+    JOIN wallets w ON t.wallet_id = w.id
+    WHERE w.user_id = ? AND t.status = 'confirmed'
+    ORDER BY t.id ASC
+  `);
+  return query.all(userId) as TransactionRecord[];
+}
+
+export function escapeCsvCell(val: string | number | null | undefined): string {
+  if (val == null) return "";
+  const str = String(val);
+  if (/[",\r\n]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+export function formatTransactionsCsv(transactions: TransactionRecord[]): string {
+  const header = "ID,Tanggal,Tipe,Kategori,Merchant,Nominal,Keterangan";
+  const rows = transactions.map((tx) => {
+    const tanggal = tx.occurred_at || tx.created_at.slice(0, 10);
+    return [
+      escapeCsvCell(tx.id),
+      escapeCsvCell(tanggal),
+      escapeCsvCell(tx.type),
+      escapeCsvCell(tx.category || ""),
+      escapeCsvCell(tx.merchant || ""),
+      escapeCsvCell(tx.amount),
+      escapeCsvCell(tx.note || ""),
+    ].join(",");
+  });
+  return [header, ...rows].join("\n");
+}

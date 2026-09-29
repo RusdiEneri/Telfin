@@ -9,6 +9,7 @@ import { cleanupPendingUploads } from "../src/services/receipt.service.js";
 import { formatTransactionDetail, formatReceiptPreview } from "../src/bot/handlers.js";
 import { getAllowedUserIds, BOT_COMMANDS } from "../src/bot/index.js";
 import { createTransactionConfirmationKeyboard, createWalletSelectionKeyboard } from "../src/bot/keyboards.js";
+import { escapeCsvCell, formatTransactionsCsv } from "../src/services/transaction.service.js";
 import db, { initDb, dbPath } from "../src/db/index.js";
 
 console.log("▶ Running Telfin logic checks...");
@@ -123,8 +124,10 @@ assert.ok(BOT_COMMANDS.length >= 10, "Must register at least 10 commands in menu
 assert.ok(BOT_COMMANDS.some((c) => c.command === "dompet"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "setdefault"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "riwayat"));
+assert.ok(BOT_COMMANDS.some((c) => c.command === "cari"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "saldo"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "rekap"));
+assert.ok(BOT_COMMANDS.some((c) => c.command === "export"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "edit"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "hapus"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "backup"));
@@ -413,6 +416,63 @@ testDb.prepare("UPDATE transactions SET status = 'confirmed' WHERE id = ?").run(
 
 // Check that wallet2 balance is updated, and wallet1 balance remains unaffected
 assert.equal(getBalance(wallet2Id), -25000, "Wallet 2 must reflect confirmed expense");
+
+// Check search functionality: LIKE query on merchant and note
+const searchMerchant = testDb.prepare(`
+  SELECT t.*
+  FROM transactions t
+  JOIN wallets w ON t.wallet_id = w.id
+  WHERE w.user_id = ? AND t.status = 'confirmed'
+    AND (t.merchant LIKE ? OR t.note LIKE ?)
+  ORDER BY t.id DESC
+  LIMIT 10
+`).all(userId, "%bensin%", "%bensin%") as any[];
+assert.equal(searchMerchant.length, 1, "Should find 1 transaction for 'bensin'");
+assert.equal(searchMerchant[0].note, "bensin motor");
+
+const searchNote = testDb.prepare(`
+  SELECT t.*
+  FROM transactions t
+  JOIN wallets w ON t.wallet_id = w.id
+  WHERE w.user_id = ? AND t.status = 'confirmed'
+    AND (t.merchant LIKE ? OR t.note LIKE ?)
+  ORDER BY t.id DESC
+  LIMIT 10
+`).all(userId, "%steak%", "%steak%") as any[];
+assert.equal(searchNote.length, 1, "Should find 1 transaction for 'steak'");
+
+const searchNone = testDb.prepare(`
+  SELECT t.*
+  FROM transactions t
+  JOIN wallets w ON t.wallet_id = w.id
+  WHERE w.user_id = ? AND t.status = 'confirmed'
+    AND (t.merchant LIKE ? OR t.note LIKE ?)
+  ORDER BY t.id DESC
+  LIMIT 10
+`).all(userId, "%supermarket_tidak_ada%", "%supermarket_tidak_ada%") as any[];
+assert.equal(searchNone.length, 0, "Non-existent keyword should return 0 results");
+
+// Check CSV export generation and escaping
+assert.equal(escapeCsvCell("Indomaret"), "Indomaret");
+assert.equal(escapeCsvCell(52500), "52500");
+assert.equal(escapeCsvCell("makan siang, warteg"), '"makan siang, warteg"');
+assert.equal(escapeCsvCell('beli "buku"'), '"beli ""buku"""');
+assert.equal(escapeCsvCell(null), "");
+
+const allConfirmed = testDb.prepare(`
+  SELECT t.*
+  FROM transactions t
+  JOIN wallets w ON t.wallet_id = w.id
+  WHERE w.user_id = ? AND t.status = 'confirmed'
+  ORDER BY t.id ASC
+`).all(userId) as any[];
+assert.ok(allConfirmed.length >= 5, "Should have at least 5 confirmed transactions");
+
+const csvData = formatTransactionsCsv(allConfirmed);
+assert.ok(csvData.startsWith("ID,Tanggal,Tipe,Kategori,Merchant,Nominal,Keterangan"), "CSV must start with correct header");
+const csvBuffer = Buffer.from(csvData, "utf-8");
+assert.ok(csvBuffer.length > 0, "CSV Buffer must not be empty");
+console.log("✔ Search LIKE query and CSV Export formatting pass");
 
 testDb.close();
 console.log("✔ SQLite transaction & balance flow passes");

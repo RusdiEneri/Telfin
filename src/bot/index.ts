@@ -18,6 +18,8 @@ import {
   handleDompet,
   handleSetDefault,
   handleTambahDompet,
+  handleCari,
+  handleExport,
 } from "./handlers.js";
 
 export const BOT_COMMANDS = [
@@ -25,7 +27,9 @@ export const BOT_COMMANDS = [
   { command: "dompet", description: "Lihat daftar dompet & saldo" },
   { command: "setdefault", description: "Ubah dompet utama (<nama_dompet>)" },
   { command: "riwayat", description: "Lihat 5 transaksi terakhir & kelola" },
+  { command: "cari", description: "Cari transaksi (<kata_kunci>)" },
   { command: "rekap", description: "Ringkasan bulanan & kategori terbesar" },
+  { command: "export", description: "Ekspor seluruh transaksi ke CSV" },
   { command: "expense", description: "Catat pengeluaran (<jumlah> <ket>)" },
   { command: "income", description: "Catat pemasukan (<jumlah> <ket>)" },
   { command: "edit", description: "Edit transaksi (<id> <nominal> <ket>)" },
@@ -87,7 +91,9 @@ export function createBot(token: string): Bot {
   bot.command("setdefault", handleSetDefault);
   bot.command("tambahdompet", handleTambahDompet);
   bot.command("riwayat", handleRiwayat);
+  bot.command("cari", handleCari);
   bot.command("rekap", handleRekap);
+  bot.command("export", handleExport);
   bot.command("help", handleHelp);
   bot.command("expense", handleExpense);
   bot.command("income", handleIncome);
