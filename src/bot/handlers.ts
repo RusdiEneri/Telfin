@@ -4,7 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import db, { initDb, dbPath, dataDir } from "../db/index.js";
 import { formatRupiah, parseRupToInt, generateBarChart, getCategoryEmoji } from "../utils/money.js";
-import { formatDateTimeJakarta, getCurrentYearMonthJakarta } from "../utils/date.js";
+import { formatDateTimeJakarta, getCurrentYearMonthJakarta, getTodayDateJakarta, getTodayDayJakarta } from "../utils/date.js";
 import { logger } from "../utils/logger.js";
 import {
   getOrCreateUserAndWallet,
@@ -30,6 +30,13 @@ import {
   setBudget,
   getBudgetReport,
   checkBudgetWarning,
+  getUserRecurrings,
+  createRecurring,
+  deactivateRecurring,
+  getRecurringById,
+  recordTransactionFromRecurring,
+  findActiveRecurringByName,
+  markRecurringReminded,
 } from "../services/transaction.service.js";
 import { saveUploadedBuffer, processReceiptFile } from "../services/receipt.service.js";
 import {
@@ -85,6 +92,7 @@ export async function handleStart(ctx: Context) {
     `• /cari <kata_kunci> - Cari riwayat transaksi\n` +
     `• /anggaran <kategori> <nominal> - Pasang batas anggaran bulanan\n` +
     `• /cekanggaran - Cek kuota & penggunaan anggaran\n` +
+    `• /langganan - Kelola tagihan rutin & langganan\n` +
     `• /edit <id> <jumlah> <keterangan> - Edit transaksi\n` +
     `• /hapus <id> - Hapus transaksi\n` +
     `• /export - Ekspor transaksi ke file CSV\n` +
@@ -392,6 +400,73 @@ export async function handleTextMessage(ctx: Context) {
   const replyTo = message?.reply_to_message;
   if (!message || !replyTo?.text) return;
 
+  // Case 1: Reply to Recurring Bill Reminder with "catat"
+  if (replyTo.text.includes("PENGINGAT TAGIHAN")) {
+    const rawText = message.text?.trim().toLowerCase() || "";
+    if (rawText !== "catat" && rawText !== "/catat") {
+      return;
+    }
+
+    const user = getTelegramUser(ctx);
+    const { userId, walletId } = getOrCreateUserAndWallet(user.id, user.name);
+    const userWallets = getUserWallets(userId);
+    const userWalletIds = new Set(userWallets.map((w) => w.id));
+
+    // Try finding recurring by ID in [#ID]
+    const match = replyTo.text.match(/#(\d+)/);
+    let recurring = match ? getRecurringById(parseInt(match[1], 10)) : undefined;
+
+    // Fallback: search by name extracted from the reminder header
+    if (!recurring) {
+      const nameMatch = replyTo.text.match(/PENGINGAT TAGIHAN:\s*(.+?)(?:\s*\[#\d+\])?\s*sebesar/i);
+      if (nameMatch) {
+        const candidateName = nameMatch[1].trim();
+        for (const wId of userWalletIds) {
+          const found = findActiveRecurringByName(wId, candidateName);
+          if (found) {
+            recurring = found;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!recurring || !userWalletIds.has(recurring.wallet_id)) {
+      await ctx.reply("❌ Data tagihan rutin tidak ditemukan atau bukan milik Anda.");
+      return;
+    }
+
+    const todayStr = getTodayDateJakarta();
+    recordTransactionFromRecurring(recurring, todayStr);
+    markRecurringReminded(recurring.id, todayStr);
+
+    const typeIcon = recurring.type === "income" ? "🟢" : "🔴";
+    const typeLabel = recurring.type === "income" ? "pemasukan" : "pengeluaran";
+    let replyMsg =
+      `✅ *Tagihan Berhasil Dicatat!*\n\n` +
+      `📌 *Nama*: ${recurring.name}\n` +
+      `💰 *Nominal*: ${formatRupiah(recurring.amount)} (${typeIcon} ${typeLabel})\n` +
+      `📂 *Kategori*: ${recurring.category || "-"}\n` +
+      `📅 *Tanggal*: ${formatDateTimeJakarta(todayStr)}\n\n` +
+      `Transaksi telah otomatis dimasukkan ke dalam saldo bulan ini.`;
+
+    if (recurring.type === "expense") {
+      const budgetWarning = checkBudgetWarning(
+        recurring.wallet_id,
+        recurring.category,
+        recurring.amount,
+        getCurrentYearMonthJakarta()
+      );
+      if (budgetWarning.isOverbudget && budgetWarning.category) {
+        replyMsg += `\n\n⚠️ *PERINGATAN*: Anggaran kategori *${budgetWarning.category}* telah melebihi batas (Overbudget)!`;
+      }
+    }
+
+    await ctx.reply(replyMsg, { parse_mode: "Markdown" });
+    return;
+  }
+
+  // Case 2: Reply to Edit Transaction prompt
   if (!replyTo.text.includes("Silakan balas pesan ini dengan format: <nominal_baru> <keterangan_baru>")) {
     return;
   }
@@ -452,6 +527,9 @@ export async function handleHelp(ctx: Context) {
     `• /cari <kata_kunci> - Cari transaksi berdasarkan merchant/keterangan (contoh: /cari indomaret)\n` +
     `• /anggaran <kategori> <nominal> - Set batas anggaran per kategori (contoh: /anggaran makan 1500000)\n` +
     `• /cekanggaran - Menampilkan pemakaian dan sisa kuota anggaran bulan ini\n` +
+    `• /langganan - Daftar tagihan rutin (langganan/kos/gaji)\n` +
+    `• /tambahlangganan <nama> <nominal> <tipe> <kategori> <tanggal> - Tambah tagihan rutin\n` +
+    `• /hapuslangganan <id> - Hapus tagihan rutin\n` +
     `• /edit <id> <jumlah> <keterangan> - Edit transaksi (contoh: /edit 12 75000 makan malam)\n` +
     `• /hapus <id> - Hapus transaksi berdasarkan ID (contoh: /hapus 12)\n` +
     `• /export - Ekspor seluruh riwayat transaksi ke file .csv\n` +
@@ -1175,3 +1253,176 @@ export async function handleCallbackQuery(ctx: Context) {
     await ctx.answerCallbackQuery({ text: "Transaksi dibatalkan." });
   }
 }
+
+export async function handleLangganan(ctx: Context) {
+  const user = getTelegramUser(ctx);
+  const { walletId } = getOrCreateUserAndWallet(user.id, user.name);
+  const wallet = getWalletById(walletId);
+  const recurrings = getUserRecurrings(walletId);
+
+  if (recurrings.length === 0) {
+    const emptyText =
+      `📋 *Daftar Tagihan Rutin*\n\n` +
+      `Belum ada tagihan rutin yang aktif di dompet *${wallet?.name || "Dompet Utama"}*.\n\n` +
+      `➕ *Cara Menambahkan*:\n` +
+      `\`/tambahlangganan <nama> <nominal> <tipe> <kategori> <tanggal(1-31)>\`\n\n` +
+      `*Contoh*:\n` +
+      `• \`/tambahlangganan Netflix 50000 expense hiburan 25\`\n` +
+      `• \`/tambahlangganan Kos Bulanan 1500000 expense kos 1\`\n` +
+      `• \`/tambahlangganan Gaji Kantor 8000000 income gaji 25\``;
+    await ctx.reply(emptyText, { parse_mode: "Markdown" });
+    return;
+  }
+
+  let totalExpense = 0;
+  let totalIncome = 0;
+
+  const itemsText = recurrings
+    .map((item) => {
+      const isExpense = item.type === "expense";
+      if (isExpense) totalExpense += item.amount;
+      else totalIncome += item.amount;
+      const typeIcon = isExpense ? "🔴" : "🟢";
+      return (
+        `[#${item.id}] ${typeIcon} *${item.name}*\n` +
+        `• Nominal: *${formatRupiah(item.amount)}*\n` +
+        `• Kategori: ${item.category || "-"}\n` +
+        `• Jatuh Tempo: Tanggal ${item.due_day} setiap bulan`
+      );
+    })
+    .join("\n\n");
+
+  let summaryText = `\n\n───────────────────\n`;
+  if (totalExpense > 0) {
+    summaryText += `🔴 *Total Tagihan/Bln*: ${formatRupiah(totalExpense)}\n`;
+  }
+  if (totalIncome > 0) {
+    summaryText += `🟢 *Total Pendapatan Rutin/Bln*: ${formatRupiah(totalIncome)}\n`;
+  }
+
+  const messageText =
+    `📋 *Daftar Tagihan Rutin*\n` +
+    `💳 *Dompet*: ${wallet?.name || "Dompet Utama"}\n\n` +
+    itemsText +
+    summaryText +
+    `\n💡 *Perintah*:\n` +
+    `• Hapus: \`/hapuslangganan <id>\`\n` +
+    `• Tambah: \`/tambahlangganan <nama> <nominal> <tipe> <kategori> <tanggal>\``;
+
+  await ctx.reply(messageText, { parse_mode: "Markdown" });
+}
+
+export async function handleTambahLangganan(ctx: Context) {
+  const match = ctx.match as string | undefined;
+  if (!match || !match.trim()) {
+    await ctx.reply(
+      "❌ Format salah.\n\n" +
+      "Gunakan format: `/tambahlangganan <nama> <nominal> <tipe> <kategori> <tanggal(1-31)>`\n" +
+      "Contoh: `/tambahlangganan Netflix 50000 expense hiburan 25`",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const parts = match.trim().split(/\s+/);
+  if (parts.length < 5) {
+    await ctx.reply(
+      "❌ Parameter kurang lengkap.\n\n" +
+      "Gunakan format: `/tambahlangganan <nama> <nominal> <tipe> <kategori> <tanggal(1-31)>`\n" +
+      "Contoh: `/tambahlangganan Netflix 50000 expense hiburan 25`",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const dueDayRaw = parts[parts.length - 1];
+  const category = parts[parts.length - 2];
+  const typeRaw = parts[parts.length - 3].toLowerCase();
+  const amountRaw = parts[parts.length - 4];
+  const name = parts.slice(0, parts.length - 4).join(" ").trim();
+
+  if (!name) {
+    await ctx.reply("❌ Nama tagihan tidak boleh kosong.", { parse_mode: "Markdown" });
+    return;
+  }
+
+  const amount = parseRupToInt(amountRaw);
+  if (!amount || amount <= 0) {
+    await ctx.reply("❌ Nominal harus berupa angka lebih dari 0. Contoh: `50000`", { parse_mode: "Markdown" });
+    return;
+  }
+
+  let type: "income" | "expense";
+  if (["expense", "pengeluaran", "keluar"].includes(typeRaw)) {
+    type = "expense";
+  } else if (["income", "pemasukan", "masuk", "gaji"].includes(typeRaw)) {
+    type = "income";
+  } else {
+    await ctx.reply(
+      "❌ Tipe tidak valid. Gunakan `expense` atau `income`.\nContoh: `/tambahlangganan Netflix 50000 expense hiburan 25`",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const dueDay = parseInt(dueDayRaw, 10);
+  if (isNaN(dueDay) || dueDay < 1 || dueDay > 31) {
+    await ctx.reply("❌ Tanggal jatuh tempo harus berupa angka antara 1 sampai 31.", { parse_mode: "Markdown" });
+    return;
+  }
+
+  const user = getTelegramUser(ctx);
+  const { walletId } = getOrCreateUserAndWallet(user.id, user.name);
+  const wallet = getWalletById(walletId);
+
+  const rec = createRecurring(walletId, name, amount, type, category, dueDay);
+
+  const typeIcon = rec.type === "expense" ? "🔴 Pengeluaran" : "🟢 Pemasukan";
+  const replyText =
+    `✅ *Tagihan Rutin Berhasil Ditambahkan!*\n\n` +
+    `📌 *Nama*: ${rec.name}\n` +
+    `💰 *Nominal*: ${formatRupiah(rec.amount)} (${typeIcon})\n` +
+    `📂 *Kategori*: ${rec.category || "-"}\n` +
+    `📅 *Jatuh Tempo*: Setiap tanggal ${rec.due_day}\n` +
+    `💳 *Dompet*: ${wallet?.name || "Dompet Utama"}\n\n` +
+    `🔔 Bot akan otomatis mengirimkan pengingat setiap tanggal ${rec.due_day}.`;
+
+  await ctx.reply(replyText, { parse_mode: "Markdown" });
+}
+
+export async function handleHapusLangganan(ctx: Context) {
+  const match = ctx.match as string | undefined;
+  if (!match || !match.trim()) {
+    await ctx.reply(
+      "❌ Format salah.\n\nGunakan format: `/hapuslangganan <id>`\nContoh: `/hapuslangganan 1`\nLihat daftar ID dengan `/langganan`.",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const id = parseInt(match.trim(), 10);
+  if (isNaN(id) || id <= 0) {
+    await ctx.reply("❌ ID tagihan harus berupa angka positif. Contoh: `/hapuslangganan 1`", { parse_mode: "Markdown" });
+    return;
+  }
+
+  const user = getTelegramUser(ctx);
+  const { userId } = getOrCreateUserAndWallet(user.id, user.name);
+  const userWallets = getUserWallets(userId);
+  const userWalletIds = new Set(userWallets.map((w) => w.id));
+
+  const rec = getRecurringById(id);
+  if (!rec || !userWalletIds.has(rec.wallet_id)) {
+    await ctx.reply("❌ Tagihan rutin tidak ditemukan atau bukan milik Anda.");
+    return;
+  }
+
+  if (rec.is_active === 0) {
+    await ctx.reply(`ℹ️ Tagihan rutin *${rec.name}* (ID: #${rec.id}) sudah tidak aktif.`, { parse_mode: "Markdown" });
+    return;
+  }
+
+  deactivateRecurring(id, rec.wallet_id);
+  await ctx.reply(`✅ Tagihan rutin *${rec.name}* (ID: #${rec.id}) berhasil dinonaktifkan.`, { parse_mode: "Markdown" });
+}
+

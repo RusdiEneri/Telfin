@@ -9,7 +9,7 @@ import {
   generateBarChart,
   getCategoryEmoji,
 } from "../src/utils/money.js";
-import { formatDateTimeJakarta, getCurrentYearMonthJakarta } from "../src/utils/date.js";
+import { formatDateTimeJakarta, getCurrentYearMonthJakarta, getTodayDateJakarta, getTodayDayJakarta } from "../src/utils/date.js";
 import { ReceiptExtractionSchema } from "../src/validations/receipt.schema.js";
 import { logger } from "../src/utils/logger.js";
 import { cleanupPendingUploads } from "../src/services/receipt.service.js";
@@ -22,6 +22,14 @@ import {
   setBudget,
   getBudgetReport,
   checkBudgetWarning,
+  createRecurring,
+  getUserRecurrings,
+  getRecurringById,
+  deactivateRecurring,
+  getDueRecurrings,
+  markRecurringReminded,
+  recordTransactionFromRecurring,
+  findActiveRecurringByName,
 } from "../src/services/transaction.service.js";
 import db, { initDb, dbPath } from "../src/db/index.js";
 
@@ -573,4 +581,83 @@ assert.ok(cleanedCount >= 1, "Should clean at least 1 hanging file");
 assert.equal(fs.existsSync(hangingFile), false, "Hanging file should be removed");
 console.log("✔ Graceful shutdown cleanupPendingUploads passes");
 
+// 8. Check Recurring Subscriptions & Scheduler Logic
+const todayDay = getTodayDayJakarta();
+const todayStr = getTodayDateJakarta();
+assert.ok(todayDay >= 1 && todayDay <= 31, "todayDay must be 1-31");
+assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(todayStr), "todayStr must be YYYY-MM-DD");
+
+// Test SQLite recurrings table exists
+const recTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='recurrings'").get() as { name: string } | undefined;
+assert.ok(recTable, "recurrings table must exist");
+
+// Create temporary wallet and user for recurring test
+const testRecUser = db.prepare("INSERT INTO users (telegram_user_id, name) VALUES ('999999', 'RecTest')").run();
+const testRecUserId = Number(testRecUser.lastInsertRowid);
+const testRecWallet = db.prepare("INSERT INTO wallets (user_id, name, is_default) VALUES (?, 'RecWallet', 1)").run(testRecUserId);
+const testRecWalletId = Number(testRecWallet.lastInsertRowid);
+
+// Add recurring bills
+const netflix = createRecurring(testRecWalletId, "Netflix", 50000, "expense", "hiburan", todayDay);
+assert.equal(netflix.name, "Netflix");
+assert.equal(netflix.amount, 50000);
+assert.equal(netflix.type, "expense");
+assert.equal(netflix.due_day, todayDay);
+assert.equal(netflix.is_active, 1);
+
+const gaji = createRecurring(testRecWalletId, "Gaji Kantor", 8000000, "income", "gaji", todayDay);
+assert.equal(gaji.amount, 8000000);
+assert.equal(gaji.type, "income");
+
+// Check getUserRecurrings
+const listRec = getUserRecurrings(testRecWalletId);
+assert.equal(listRec.length, 2, "Must return 2 active recurrings");
+
+// Check getDueRecurrings
+const dueRecs = getDueRecurrings(todayDay, todayStr);
+const foundNetflix = dueRecs.find((r) => r.id === netflix.id);
+assert.ok(foundNetflix, "Netflix must be due today");
+assert.equal(foundNetflix.telegram_user_id, "999999");
+
+// Check markRecurringReminded
+markRecurringReminded(netflix.id, todayStr);
+const dueRecsAfter = getDueRecurrings(todayDay, todayStr);
+assert.ok(!dueRecsAfter.some((r) => r.id === netflix.id), "Netflix must not be returned again today after reminded");
+
+// Check recordTransactionFromRecurring (triggered by 'catat')
+const newTxId = recordTransactionFromRecurring(netflix, todayStr);
+assert.ok(newTxId > 0, "Transaction ID must be positive");
+const recordedTx = db.prepare("SELECT * FROM transactions WHERE id = ?").get(newTxId) as any;
+assert.equal(recordedTx.amount, 50000);
+assert.equal(recordedTx.status, "confirmed");
+assert.equal(recordedTx.source, "recurring");
+assert.equal(recordedTx.merchant, "Netflix");
+
+// Check reply message matching & extraction
+const sampleReminderText = `🔔 PENGINGAT TAGIHAN: Netflix [#${netflix.id}] sebesar Rp50.000 jatuh tempo hari ini! \nBalas pesan ini dengan 'catat' untuk langsung memasukkannya ke pengeluaran bulan ini.`;
+const idMatch = sampleReminderText.match(/#(\d+)/);
+assert.ok(idMatch && parseInt(idMatch[1], 10) === netflix.id, "Regex must extract recurring ID correctly");
+const isReminder = sampleReminderText.includes("PENGINGAT TAGIHAN");
+assert.ok(isReminder, "Sample text must identify as recurring reminder");
+
+// Check soft-delete / deactivateRecurring
+const deactivated = deactivateRecurring(netflix.id, testRecWalletId);
+assert.equal(deactivated, true);
+const listRecAfterDeactivate = getUserRecurrings(testRecWalletId);
+assert.equal(listRecAfterDeactivate.length, 1, "Only 1 active recurring should remain");
+assert.equal(listRecAfterDeactivate[0].id, gaji.id);
+
+// Check BOT_COMMANDS includes langganan
+assert.ok(BOT_COMMANDS.some((c) => c.command === "langganan"));
+assert.ok(BOT_COMMANDS.some((c) => c.command === "tambahlangganan"));
+assert.ok(BOT_COMMANDS.some((c) => c.command === "hapuslangganan"));
+
+// Clean up test data
+db.prepare("DELETE FROM transactions WHERE id = ?").run(newTxId);
+db.prepare("DELETE FROM recurrings WHERE wallet_id = ?").run(testRecWalletId);
+db.prepare("DELETE FROM wallets WHERE id = ?").run(testRecWalletId);
+db.prepare("DELETE FROM users WHERE id = ?").run(testRecUserId);
+console.log("✔ Recurring subscriptions CRUD & reminder scheduler logic pass");
+
 console.log("🎉 All checks passed successfully!");
+

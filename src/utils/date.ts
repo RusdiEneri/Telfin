@@ -48,3 +48,26 @@ export function getCurrentYearMonthJakarta(date: Date = new Date()): string {
     month: "2-digit",
   }).format(date);
 }
+
+/**
+ * Returns today's date in 'YYYY-MM-DD' format in Asia/Jakarta timezone.
+ */
+export function getTodayDateJakarta(date: Date = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+/**
+ * Returns current day of month (1-31) in Asia/Jakarta timezone.
+ */
+export function getTodayDayJakarta(date: Date = new Date()): number {
+  const dayStr = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Jakarta",
+    day: "numeric",
+  }).format(date);
+  return parseInt(dayStr, 10);
+}
