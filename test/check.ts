@@ -3,14 +3,20 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { formatRupiah, parseRupToInt, parseRupiah } from "../src/utils/money.js";
-import { formatDateTimeJakarta } from "../src/utils/date.js";
+import { formatDateTimeJakarta, getCurrentYearMonthJakarta } from "../src/utils/date.js";
 import { ReceiptExtractionSchema } from "../src/validations/receipt.schema.js";
 import { logger } from "../src/utils/logger.js";
 import { cleanupPendingUploads } from "../src/services/receipt.service.js";
 import { formatTransactionDetail, formatReceiptPreview } from "../src/bot/handlers.js";
 import { getAllowedUserIds, BOT_COMMANDS } from "../src/bot/index.js";
 import { createTransactionConfirmationKeyboard, createWalletSelectionKeyboard } from "../src/bot/keyboards.js";
-import { escapeCsvCell, formatTransactionsCsv } from "../src/services/transaction.service.js";
+import {
+  escapeCsvCell,
+  formatTransactionsCsv,
+  setBudget,
+  getBudgetReport,
+  checkBudgetWarning,
+} from "../src/services/transaction.service.js";
 import db, { initDb, dbPath } from "../src/db/index.js";
 
 console.log("▶ Running Telfin logic checks...");
@@ -136,6 +142,8 @@ assert.ok(BOT_COMMANDS.some((c) => c.command === "dompet"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "setdefault"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "riwayat"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "cari"));
+assert.ok(BOT_COMMANDS.some((c) => c.command === "anggaran"));
+assert.ok(BOT_COMMANDS.some((c) => c.command === "cekanggaran"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "saldo"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "rekap"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "export"));
@@ -484,6 +492,41 @@ assert.ok(csvData.startsWith("ID,Tanggal,Tipe,Kategori,Merchant,Nominal,Keterang
 const csvBuffer = Buffer.from(csvData, "utf-8");
 assert.ok(csvBuffer.length > 0, "CSV Buffer must not be empty");
 console.log("✔ Search LIKE query and CSV Export formatting pass");
+
+// Check Budgeting operations & UPSERT on testDb
+const ym = "2026-09";
+const insertBudget = testDb.prepare(`
+  INSERT INTO budgets (wallet_id, category, amount_limit, month_year)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT(wallet_id, category, month_year)
+  DO UPDATE SET amount_limit = excluded.amount_limit
+`);
+insertBudget.run(walletId, "Makanan & Minuman", 250000, ym);
+
+let bRow = testDb.prepare("SELECT * FROM budgets WHERE wallet_id = ? AND category = ? AND month_year = ?").get(walletId, "Makanan & Minuman", ym) as any;
+assert.equal(bRow.amount_limit, 250000, "Initial budget should be 250000");
+
+// UPSERT update to 300000
+insertBudget.run(walletId, "Makanan & Minuman", 300000, ym);
+bRow = testDb.prepare("SELECT * FROM budgets WHERE wallet_id = ? AND category = ? AND month_year = ?").get(walletId, "Makanan & Minuman", ym) as any;
+assert.equal(bRow.amount_limit, 300000, "Updated budget should be 300000");
+
+// Check spent calculation: Makanan & Minuman spent in September is 200000 (50000 + 150000)
+const spentRow = testDb.prepare(`
+  SELECT COALESCE(SUM(amount), 0) AS total_spent
+  FROM transactions
+  WHERE wallet_id = ? AND status = 'confirmed' AND type = 'expense'
+    AND (LOWER(category) = LOWER(?) OR LOWER(category) LIKE '%' || LOWER(?) || '%')
+    AND COALESCE(occurred_at, substr(created_at, 1, 10)) LIKE ? || '%'
+`).get(walletId, "Makanan & Minuman", "Makanan & Minuman", ym) as { total_spent: number };
+assert.equal(spentRow.total_spent, 200000, "Current spent on Makanan & Minuman must be 200000");
+
+// Check budget warning logic:
+// Adding 50000 expense -> 200000 + 50000 = 250000 <= 300000 (not overbudget)
+assert.equal(spentRow.total_spent + 50000 > bRow.amount_limit, false, "250000 should not be overbudget");
+// Adding 150000 expense -> 200000 + 150000 = 350000 > 300000 (overbudget!)
+assert.equal(spentRow.total_spent + 150000 > bRow.amount_limit, true, "350000 must trigger overbudget");
+console.log("✔ Budgeting UPSERT, report & overbudget calculation pass");
 
 testDb.close();
 console.log("✔ SQLite transaction & balance flow passes");

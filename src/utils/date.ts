@@ -36,3 +36,15 @@ export function formatDateTimeJakarta(dateInput?: string | Date | null): string 
   }
   return JAKARTA_FORMATTER.format(date);
 }
+
+/**
+ * Returns current year and month in 'YYYY-MM' format in Asia/Jakarta timezone.
+ * Example output: "2026-09"
+ */
+export function getCurrentYearMonthJakarta(date: Date = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+  }).format(date);
+}

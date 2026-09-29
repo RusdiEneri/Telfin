@@ -4,7 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import db, { initDb, dbPath, dataDir } from "../db/index.js";
 import { formatRupiah, parseRupToInt } from "../utils/money.js";
-import { formatDateTimeJakarta } from "../utils/date.js";
+import { formatDateTimeJakarta, getCurrentYearMonthJakarta } from "../utils/date.js";
 import { logger } from "../utils/logger.js";
 import {
   getOrCreateUserAndWallet,
@@ -27,6 +27,9 @@ import {
   searchTransactions,
   getAllConfirmedTransactions,
   formatTransactionsCsv,
+  setBudget,
+  getBudgetReport,
+  checkBudgetWarning,
 } from "../services/transaction.service.js";
 import { saveUploadedBuffer, processReceiptFile } from "../services/receipt.service.js";
 import {
@@ -80,6 +83,8 @@ export async function handleStart(ctx: Context) {
     `• /saldo - Cek saldo dompet & ringkasan\n` +
     `• /riwayat - Lihat 5 transaksi terakhir\n` +
     `• /cari <kata_kunci> - Cari riwayat transaksi\n` +
+    `• /anggaran <kategori> <nominal> - Pasang batas anggaran bulanan\n` +
+    `• /cekanggaran - Cek kuota & penggunaan anggaran\n` +
     `• /edit <id> <jumlah> <keterangan> - Edit transaksi\n` +
     `• /hapus <id> - Hapus transaksi\n` +
     `• /export - Ekspor transaksi ke file CSV\n` +
@@ -443,6 +448,8 @@ export async function handleHelp(ctx: Context) {
     `• /saldo - Menampilkan sisa saldo dan ringkasan dompet\n` +
     `• /riwayat - Melihat daftar riwayat 5 transaksi terakhir\n` +
     `• /cari <kata_kunci> - Cari transaksi berdasarkan merchant/keterangan (contoh: /cari indomaret)\n` +
+    `• /anggaran <kategori> <nominal> - Set batas anggaran per kategori (contoh: /anggaran makan 1500000)\n` +
+    `• /cekanggaran - Menampilkan pemakaian dan sisa kuota anggaran bulan ini\n` +
     `• /edit <id> <jumlah> <keterangan> - Edit transaksi (contoh: /edit 12 75000 makan malam)\n` +
     `• /hapus <id> - Hapus transaksi berdasarkan ID (contoh: /hapus 12)\n` +
     `• /export - Ekspor seluruh riwayat transaksi ke file .csv\n` +
@@ -582,6 +589,84 @@ export async function handleExport(ctx: Context) {
     logger.error("Gagal melakukan export transaksi:", err);
     await ctx.reply("❌ Gagal mengekspor transaksi.");
   }
+}
+
+export async function handleAnggaran(ctx: Context) {
+  const match = (ctx.match as string | undefined)?.trim();
+  if (!match) {
+    await ctx.reply(
+      "❌ Format salah.\n\nContoh penggunaan:\n`/anggaran makan 1500000`\n`/anggaran nongkrong 500000`",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const parts = match.split(/\s+/);
+  if (parts.length < 2) {
+    await ctx.reply(
+      "❌ Format salah.\n\nContoh penggunaan:\n`/anggaran makan 1500000`\n`/anggaran nongkrong 500000`",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const amountStr = parts[parts.length - 1];
+  const amount = parseRupToInt(amountStr);
+  const category = parts.slice(0, -1).join(" ").trim();
+
+  if (!amount || !category) {
+    await ctx.reply(
+      "❌ Format nominal atau kategori tidak valid.\n\nContoh penggunaan:\n`/anggaran makan 1500000`",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const user = getTelegramUser(ctx);
+  const { walletId } = getOrCreateUserAndWallet(user.id, user.name);
+  const monthYear = getCurrentYearMonthJakarta();
+
+  setBudget(walletId, category, amount, monthYear);
+
+  await ctx.reply(
+    `✅ Anggaran kategori *${category}* bulan ini diset sebesar *${formatRupiah(amount)}*.`,
+    { parse_mode: "Markdown" }
+  );
+}
+
+export async function handleCekAnggaran(ctx: Context) {
+  const user = getTelegramUser(ctx);
+  const { walletId } = getOrCreateUserAndWallet(user.id, user.name);
+  const monthYear = getCurrentYearMonthJakarta();
+
+  const budgets = getBudgetReport(walletId, monthYear);
+  if (budgets.length === 0) {
+    await ctx.reply(
+      `📊 *Anggaran Bulan Ini (${monthYear})*\n\n` +
+      `Belum ada anggaran yang disetel untuk bulan ini.\n` +
+      `Gunakan \`/anggaran <kategori> <nominal>\` untuk membuat anggaran baru.`,
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  let text = `📊 *Status Anggaran Bulan Ini (${monthYear})*\n\n`;
+  for (const b of budgets) {
+    const remaining = b.amount_limit - b.total_spent;
+    const percentage = b.amount_limit > 0 ? Math.round((b.total_spent / b.amount_limit) * 100) : 0;
+    const statusIcon = percentage > 100 ? "🔴" : percentage >= 80 ? "🟡" : "🟢";
+    const statusText = percentage > 100 ? " *(Overbudget!)*" : "";
+
+    text += `${statusIcon} *${b.category}*${statusText}\n`;
+    text += `  • Terpakai: ${formatRupiah(b.total_spent)} / ${formatRupiah(b.amount_limit)} (${percentage}%)\n`;
+    if (remaining >= 0) {
+      text += `  • Sisa: ${formatRupiah(remaining)}\n\n`;
+    } else {
+      text += `  • Melebihi: ${formatRupiah(Math.abs(remaining))}\n\n`;
+    }
+  }
+
+  await ctx.reply(text.trim(), { parse_mode: "Markdown" });
 }
 
 export async function handleBackup(ctx: Context) {
@@ -1046,13 +1131,19 @@ export async function handleCallbackQuery(ctx: Context) {
   }
 
   if (action === "confirm") {
+    // Check budget warning for expense transaction before confirming
+    const monthYear = getCurrentYearMonthJakarta();
+    const budgetWarning = tx.type === "expense"
+      ? checkBudgetWarning(tx.wallet_id, tx.category, tx.amount, monthYear)
+      : { isOverbudget: false };
+
     confirmTransaction(transactionId, tx.wallet_id);
     const { balance } = getWalletBalance(tx.wallet_id);
     const targetWallet = getWalletById(tx.wallet_id);
 
     const typeIcon = tx.type === "income" ? "🟢" : "🔴";
     const timeStr = formatDateTimeJakarta(tx.created_at || tx.occurred_at || new Date());
-    const resultText =
+    let resultText =
       `✅ *Transaksi Berhasil Disimpan!*\n\n` +
       `${typeIcon} *Nominal*: ${formatRupiah(tx.amount)}\n` +
       `🏪 *Merchant*: ${tx.merchant || "-"}\n` +
@@ -1061,8 +1152,16 @@ export async function handleCallbackQuery(ctx: Context) {
       `💳 *Dompet*: ${targetWallet?.name || "Dompet Utama"}\n\n` +
       `💰 *Saldo Dompet Saat Ini*: *${formatRupiah(balance)}*`;
 
+    if (budgetWarning.isOverbudget && budgetWarning.category) {
+      resultText += `\n\n⚠️ *PERINGATAN*: Anggaran kategori *${budgetWarning.category}* bulan ini telah melebihi batas (Overbudget)!`;
+    }
+
     await ctx.editMessageText(resultText, { parse_mode: "Markdown" });
-    await ctx.answerCallbackQuery({ text: "Transaksi berhasil dikonfirmasi!" });
+    await ctx.answerCallbackQuery({
+      text: budgetWarning.isOverbudget
+        ? `⚠️ Peringatan: Anggaran ${budgetWarning.category} melebihi batas!`
+        : "Transaksi berhasil dikonfirmasi!",
+    });
   } else if (action === "cancel") {
     cancelTransaction(transactionId, tx.wallet_id);
 

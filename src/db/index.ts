@@ -71,6 +71,21 @@ export function initDb(): Database.Database {
     `);
   }
 
+  // Auto-migrate: ensure budgets table exists
+  currentDb.exec(`
+    CREATE TABLE IF NOT EXISTS budgets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      wallet_id INTEGER NOT NULL,
+      category TEXT NOT NULL,
+      amount_limit INTEGER NOT NULL,
+      month_year TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(wallet_id, category, month_year),
+      FOREIGN KEY(wallet_id) REFERENCES wallets(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_budgets_wallet_month ON budgets(wallet_id, month_year);
+  `);
+
   // Initialize tables & indices from schema.sql
   const candidates = [
     path.join(__dirname, "schema.sql"),

@@ -396,3 +396,120 @@ export function formatTransactionsCsv(transactions: TransactionRecord[]): string
   });
   return [header, ...rows].join("\n");
 }
+
+export interface BudgetRecord {
+  id: number;
+  wallet_id: number;
+  category: string;
+  amount_limit: number;
+  month_year: string;
+  created_at: string;
+}
+
+export interface BudgetReportItem {
+  id: number;
+  wallet_id: number;
+  category: string;
+  amount_limit: number;
+  month_year: string;
+  total_spent: number;
+}
+
+export function setBudget(
+  walletId: number,
+  category: string,
+  amountLimit: number,
+  monthYear: string
+): BudgetRecord {
+  const cleanCategory = category.trim();
+  const query = db.prepare(`
+    INSERT INTO budgets (wallet_id, category, amount_limit, month_year)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(wallet_id, category, month_year)
+    DO UPDATE SET amount_limit = excluded.amount_limit
+  `);
+  query.run(walletId, cleanCategory, amountLimit, monthYear);
+
+  const getQuery = db.prepare(`
+    SELECT * FROM budgets
+    WHERE wallet_id = ? AND category = ? AND month_year = ?
+  `);
+  return getQuery.get(walletId, cleanCategory, monthYear) as BudgetRecord;
+}
+
+export function getBudgetReport(walletId: number, monthYear: string): BudgetReportItem[] {
+  const budgetsQuery = db.prepare(`
+    SELECT * FROM budgets
+    WHERE wallet_id = ? AND month_year = ?
+    ORDER BY category ASC
+  `);
+  const budgets = budgetsQuery.all(walletId, monthYear) as BudgetRecord[];
+
+  return budgets.map((b) => {
+    const spentQuery = db.prepare(`
+      SELECT COALESCE(SUM(amount), 0) AS total_spent
+      FROM transactions
+      WHERE wallet_id = ? AND status = 'confirmed' AND type = 'expense'
+        AND (LOWER(category) = LOWER(?) OR LOWER(category) LIKE '%' || LOWER(?) || '%')
+        AND COALESCE(occurred_at, substr(created_at, 1, 10)) LIKE ? || '%'
+    `);
+    const row = spentQuery.get(walletId, b.category, b.category, monthYear) as { total_spent: number };
+    return {
+      ...b,
+      total_spent: Number(row ? row.total_spent : 0),
+    };
+  });
+}
+
+export function checkBudgetWarning(
+  walletId: number,
+  category: string | null | undefined,
+  newExpenseAmount: number,
+  monthYear: string
+): { isOverbudget: boolean; category?: string; limit?: number; totalAfter?: number } {
+  if (!category) return { isOverbudget: false };
+
+  const cleanCategory = category.trim();
+  const budgetQuery = db.prepare(`
+    SELECT * FROM budgets
+    WHERE wallet_id = ? AND month_year = ?
+      AND (LOWER(category) = LOWER(?) OR LOWER(?) LIKE '%' || LOWER(category) || '%' OR LOWER(category) LIKE '%' || LOWER(?) || '%')
+    ORDER BY CASE WHEN LOWER(category) = LOWER(?) THEN 0 ELSE 1 END
+    LIMIT 1
+  `);
+  const budget = budgetQuery.get(
+    walletId,
+    monthYear,
+    cleanCategory,
+    cleanCategory,
+    cleanCategory,
+    cleanCategory
+  ) as BudgetRecord | undefined;
+
+  if (!budget) {
+    return { isOverbudget: false };
+  }
+
+  const spentQuery = db.prepare(`
+    SELECT COALESCE(SUM(amount), 0) AS total_spent
+    FROM transactions
+    WHERE wallet_id = ? AND status = 'confirmed' AND type = 'expense'
+      AND (LOWER(category) = LOWER(?) OR LOWER(category) LIKE '%' || LOWER(?) || '%')
+      AND COALESCE(occurred_at, substr(created_at, 1, 10)) LIKE ? || '%'
+  `);
+  const row = spentQuery.get(walletId, budget.category, budget.category, monthYear) as { total_spent: number };
+  const currentSpent = Number(row ? row.total_spent : 0);
+  const totalAfter = currentSpent + newExpenseAmount;
+
+  if (totalAfter > budget.amount_limit) {
+    return {
+      isOverbudget: true,
+      category: budget.category,
+      limit: budget.amount_limit,
+      totalAfter,
+    };
+  }
+
+  return { isOverbudget: false };
+}
+
