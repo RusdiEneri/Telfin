@@ -13,7 +13,13 @@ import { formatDateTimeJakarta, getCurrentYearMonthJakarta, getTodayDateJakarta,
 import { ReceiptExtractionSchema } from "../src/validations/receipt.schema.js";
 import { logger } from "../src/utils/logger.js";
 import { cleanupPendingUploads } from "../src/services/receipt.service.js";
-import { formatTransactionDetail, formatReceiptPreview } from "../src/bot/handlers.js";
+import {
+  formatTransactionDetail,
+  formatReceiptPreview,
+  checkInsightRateLimit,
+  recordInsightUsage,
+  resetInsightRateLimit,
+} from "../src/bot/handlers.js";
 import { getAllowedUserIds, BOT_COMMANDS } from "../src/bot/index.js";
 import { createTransactionConfirmationKeyboard, createWalletSelectionKeyboard, createImportConfirmationKeyboard } from "../src/bot/keyboards.js";
 import {
@@ -22,6 +28,7 @@ import {
   parseCsvLine,
   parseCsvTransactions,
   importTransactionsBulk,
+  buildFinancialRecapSummary,
   setBudget,
   getBudgetReport,
   checkBudgetWarning,
@@ -723,6 +730,58 @@ db.prepare("DELETE FROM transactions WHERE wallet_id = ?").run(testImportWalletI
 db.prepare("DELETE FROM wallets WHERE id = ?").run(testImportWalletId);
 db.prepare("DELETE FROM users WHERE id = ?").run(testImportUserId);
 console.log("✔ Native CSV parsing, error resilience & bulk import (SQLite Transaction) pass");
+
+// 10. Check AI Financial Insight Recap Summary, Rate Limiting & Commands
+// 10a. Test buildFinancialRecapSummary formatting
+const mockRecap = {
+  yearMonth: "2026-09",
+  totalIncome: 10000000,
+  totalExpense: 4500000,
+  netBalance: 5500000,
+  topCategories: [
+    { category: "Makanan & Minuman", total: 2000000, percentage: 44 },
+    { category: "Transportasi", total: 1000000, percentage: 22 },
+    { category: "Hiburan", total: 800000, percentage: 18 },
+  ],
+};
+
+const mockBudgetsNormal = [
+  { id: 1, wallet_id: 1, category: "Makanan & Minuman", amount_limit: 2500000, month_year: "2026-09", total_spent: 2000000 },
+];
+
+const summaryNormal = buildFinancialRecapSummary(mockRecap, mockBudgetsNormal, "September", 2026);
+assert.ok(summaryNormal.includes("Total Pemasukan: Rp10.000.000"));
+assert.ok(summaryNormal.includes("Total Pengeluaran: Rp4.500.000"));
+assert.ok(summaryNormal.includes("Selisih (Net): +Rp5.500.000"));
+assert.ok(summaryNormal.includes("Makanan & Minuman: Rp2.000.000 (44%)"));
+assert.ok(summaryNormal.includes("Semua kategori pengeluaran masih aman"));
+
+const mockBudgetsOver = [
+  { id: 1, wallet_id: 1, category: "Makanan & Minuman", amount_limit: 1500000, month_year: "2026-09", total_spent: 2000000 },
+];
+const summaryOver = buildFinancialRecapSummary(mockRecap, mockBudgetsOver, "September", 2026);
+assert.ok(summaryOver.includes("Overbudget pada kategori: Makanan & Minuman"));
+
+const summaryNoBudget = buildFinancialRecapSummary(mockRecap, [], "September", 2026);
+assert.ok(summaryNoBudget.includes("Belum ada target anggaran yang diset."));
+
+// 10b. Test Rate Limiting logic
+const testUserId = 777777;
+resetInsightRateLimit(testUserId);
+assert.equal(checkInsightRateLimit(testUserId).allowed, true, "First request must be allowed");
+
+recordInsightUsage(testUserId);
+const checkAfter = checkInsightRateLimit(testUserId);
+assert.equal(checkAfter.allowed, false, "Second request within 24h must be rejected");
+assert.ok(checkAfter.remainingHours && checkAfter.remainingHours >= 1, "Must indicate remaining hours");
+
+resetInsightRateLimit(testUserId);
+assert.equal(checkInsightRateLimit(testUserId).allowed, true, "Request must be allowed again after reset");
+
+// 10c. Verify bot commands include insight
+assert.ok(BOT_COMMANDS.some((c) => c.command === "insight"), "BOT_COMMANDS must include insight");
+
+console.log("✔ AI Financial Insight prompt summary, rate limiting & commands pass");
 
 console.log("🎉 All checks passed successfully!");
 

@@ -1,6 +1,6 @@
 import db from "../db/index.js";
 import type { ReceiptExtraction } from "../validations/receipt.schema.js";
-import { parseRupToInt } from "../utils/money.js";
+import { parseRupToInt, formatRupiah } from "../utils/money.js";
 
 export interface UserWallet {
   userId: number;
@@ -806,5 +806,46 @@ export function recordTransactionFromRecurring(
     occurredAt
   );
   return Number(info.lastInsertRowid);
+}
+
+export function buildFinancialRecapSummary(
+  recap: MonthlyRecap,
+  budgets: BudgetReportItem[],
+  monthName: string,
+  year: number
+): string {
+  const top3 =
+    recap.topCategories.slice(0, 3).map((c) =>
+      `- ${c.category}: ${formatRupiah(c.total)} (${c.percentage}%)`
+    ).join("\n") || "- Belum ada catatan pengeluaran";
+
+  const overbudgetItems = budgets.filter((b) => b.total_spent > b.amount_limit);
+  let budgetStatus = "Belum ada target anggaran yang diset.";
+  if (budgets.length > 0) {
+    if (overbudgetItems.length > 0) {
+      budgetStatus =
+        `Overbudget pada kategori: ` +
+        overbudgetItems
+          .map(
+            (b) =>
+              `${b.category} (pengeluaran ${formatRupiah(b.total_spent)} / limit ${formatRupiah(b.amount_limit)})`
+          )
+          .join(", ");
+    } else {
+      budgetStatus = "Semua kategori pengeluaran masih aman (di bawah batas anggaran / under-budget).";
+    }
+  }
+
+  const sign = recap.netBalance >= 0 ? "+" : "-";
+  const netFormatted = `${sign}${formatRupiah(Math.abs(recap.netBalance))}`;
+
+  return (
+    `Periode: ${monthName} ${year}\n` +
+    `Total Pemasukan: ${formatRupiah(recap.totalIncome)}\n` +
+    `Total Pengeluaran: ${formatRupiah(recap.totalExpense)}\n` +
+    `Selisih (Net): ${netFormatted}\n` +
+    `Top 3 Kategori Pengeluaran Terbesar:\n${top3}\n` +
+    `Status Anggaran: ${budgetStatus}`
+  );
 }
 

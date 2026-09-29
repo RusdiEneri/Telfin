@@ -39,8 +39,10 @@ import {
   markRecurringReminded,
   parseCsvTransactions,
   importTransactionsBulk,
+  buildFinancialRecapSummary,
 } from "../services/transaction.service.js";
 import { saveUploadedBuffer, processReceiptFile } from "../services/receipt.service.js";
+import { generateFinancialInsight } from "../services/ai.service.js";
 import {
   createTransactionConfirmationKeyboard,
   createTransactionActionKeyboard,
@@ -63,6 +65,34 @@ const MONTH_NAMES = [
   "November",
   "Desember",
 ];
+
+// ponytail: in-memory map for rate limiting (1x per 24 hours per user). Upgradable to SQLite table if persistence across bot restarts is needed.
+const userLastInsight = new Map<number, number>();
+const INSIGHT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+export function checkInsightRateLimit(userId: number | string): { allowed: boolean; remainingHours?: number } {
+  const uId = Number(userId);
+  const lastTime = userLastInsight.get(uId);
+  if (!lastTime) return { allowed: true };
+  const diff = Date.now() - lastTime;
+  if (diff < INSIGHT_COOLDOWN_MS) {
+    const remainingHours = Math.max(1, Math.ceil((INSIGHT_COOLDOWN_MS - diff) / (60 * 60 * 1000)));
+    return { allowed: false, remainingHours };
+  }
+  return { allowed: true };
+}
+
+export function recordInsightUsage(userId: number | string): void {
+  userLastInsight.set(Number(userId), Date.now());
+}
+
+export function resetInsightRateLimit(userId?: number | string): void {
+  if (userId !== undefined) {
+    userLastInsight.delete(Number(userId));
+  } else {
+    userLastInsight.clear();
+  }
+}
 
 function getTelegramUser(ctx: Context) {
   const from = ctx.from;
@@ -88,7 +118,8 @@ export async function handleStart(ctx: Context) {
     `📊 *Pantau Keuangan*:\n` +
     `• \`/saldo\` — Cek sisa saldo & uang keluar/masuk\n` +
     `• \`/riwayat\` — Lihat 5 transaksi terakhir\n` +
-    `• \`/rekap\` — Laporan & grafik pengeluaran bulanan\n\n` +
+    `• \`/rekap\` — Laporan & grafik pengeluaran bulanan\n` +
+    `• \`/insight\` — Analisa & saran keuangan bulanan AI\n\n` +
     `⚙️ *Fitur Lainnya*:\n` +
     `• \`/anggaran\` — Pasang batas belanja agar tidak boros\n` +
     `• \`/langganan\` — Pengingat tagihan rutin (kos/Netflix/dll)\n` +
@@ -263,6 +294,87 @@ export async function handleRekap(ctx: Context) {
 
   await ctx.reply(text.trim(), { parse_mode: "Markdown" });
 }
+
+export async function handleInsight(ctx: Context) {
+  const user = getTelegramUser(ctx);
+  const { walletId } = getOrCreateUserAndWallet(user.id, user.name);
+
+  const rateCheck = checkInsightRateLimit(user.id);
+  if (!rateCheck.allowed) {
+    await ctx.reply(
+      `⏳ *Batas Harian Tercapai*\n\n` +
+      `Anda sudah meminta analisa AI hari ini. Untuk menghemat kuota, fitur ini dibatasi 1x sehari (dapat diminta lagi dalam ~${rateCheck.remainingHours} jam).\n\n` +
+      `💡 Anda dapat melihat ringkasan keuangan manual kapan saja dengan mengetik \`/rekap\`.`,
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1;
+  const yearMonth = `${year}-${String(month).padStart(2, "0")}`;
+  const monthName = MONTH_NAMES[month - 1];
+
+  const recap = getMonthlyRecap(walletId, yearMonth);
+  const budgets = getBudgetReport(walletId, yearMonth);
+  const recapSummary = buildFinancialRecapSummary(recap, budgets, monthName, year);
+
+  try {
+    await ctx.replyWithChatAction?.("typing");
+  } catch {
+    // Abaikan jika chat action tidak didukung
+  }
+
+  try {
+    const aiInsight = await generateFinancialInsight(recapSummary);
+    recordInsightUsage(user.id);
+
+    const sign = recap.netBalance >= 0 ? "+" : "-";
+    const netFormatted = `${sign}${formatRupiah(Math.abs(recap.netBalance))}`;
+
+    const replyText =
+      `🧠 *Analisa AI untuk Keuanganmu Bulan Ini:*\n\n` +
+      `${aiInsight}\n\n` +
+      `📊 *Ringkasan ${monthName} ${year}*:\n` +
+      `• Pemasukan: ${formatRupiah(recap.totalIncome)}\n` +
+      `• Pengeluaran: ${formatRupiah(recap.totalExpense)}\n` +
+      `• Selisih (Net): *${netFormatted}*\n\n` +
+      `💡 _Gunakan \`/rekap\` untuk melihat rincian grafik per kategori._`;
+
+    try {
+      await ctx.reply(replyText, { parse_mode: "Markdown" });
+    } catch {
+      await ctx.reply(replyText);
+    }
+  } catch (error: any) {
+    logger.warn(`Gagal menghasilkan analisa AI: ${error.message}`);
+
+    const sign = recap.netBalance >= 0 ? "+" : "-";
+    const netFormatted = `${sign}${formatRupiah(Math.abs(recap.netBalance))}`;
+
+    let fallbackText =
+      `🧠 _Analisa AI sedang tidak tersedia, tapi kamu bisa cek rekap manual di /rekap._\n\n` +
+      `📊 *Rekap Keuangan - ${monthName} ${year}*\n\n` +
+      `💰 *Total Pemasukan*: ${formatRupiah(recap.totalIncome)}\n` +
+      `💸 *Total Pengeluaran*: ${formatRupiah(recap.totalExpense)}\n` +
+      `📈 *Selisih (Net)*: *${netFormatted}*\n\n` +
+      `📊 *Distribusi Pengeluaran per Kategori*:\n`;
+
+    if (recap.topCategories.length === 0) {
+      fallbackText += `_(Belum ada catatan pengeluaran di bulan ini)_\n`;
+    } else {
+      for (const cat of recap.topCategories) {
+        const emoji = getCategoryEmoji(cat.category);
+        const bar = generateBarChart(cat.percentage);
+        fallbackText += `${emoji} *${cat.category}*  ${bar} ${cat.percentage}% (${formatRupiah(cat.total)})\n`;
+      }
+    }
+
+    await ctx.reply(fallbackText.trim(), { parse_mode: "Markdown" });
+  }
+}
+
 
 export async function handleSaldo(ctx: Context) {
   const user = getTelegramUser(ctx);
@@ -579,6 +691,7 @@ export async function handleHelp(ctx: Context) {
     `• \`/saldo\` — Cek sisa saldo & ringkasan uang masuk/keluar\n` +
     `• \`/riwayat\` — Lihat 5 transaksi terakhir (bisa edit/hapus)\n` +
     `• \`/rekap\` — Laporan & grafik pengeluaran per kategori\n` +
+    `• \`/insight\` — Analisa & saran keuangan bulanan dari AI\n` +
     `• \`/cari <kata>\` — Cari transaksi (contoh: \`/cari bensin\`)\n` +
     `• \`/export\` — Ekspor seluruh transaksi ke file Excel/CSV\n` +
     `• \`/import\` — Impor data transaksi dari file CSV\n\n` +
