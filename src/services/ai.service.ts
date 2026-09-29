@@ -53,49 +53,61 @@ async function extractWithGemini(filePath: string, mimeType: string, base64Data:
     throw new Error("GEMINI_API_KEY belum dikonfigurasi di file .env");
   }
 
-  // ponytail: defaults to gemini-3.8-flash for high accuracy & speed with zero external SDKs
-  const model = process.env.GEMINI_MODEL || "gemini-3.8-flash";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  // ponytail: defaults to gemini-3.5-flash; auto-fallbacks on 503/429 high demand spikes
+  const primaryModel = process.env.GEMINI_MODEL || "gemini-3.5-flash";
+  const candidateModels = Array.from(new Set([primaryModel, "gemini-3.5-flash", "gemini-3-flash-preview"]));
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [
-        {
-          parts: [
-            {
-              inline_data: {
-                mime_type: mimeType,
-                data: base64Data,
+  let lastError: Error | null = null;
+
+  for (const model of candidateModels) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              {
+                inline_data: {
+                  mime_type: mimeType,
+                  data: base64Data,
+                },
               },
-            },
-            {
-              text: RECEIPT_PROMPT,
-            },
-          ],
+              {
+                text: RECEIPT_PROMPT,
+              },
+            ],
+          },
+        ],
+        generationConfig: {
+          response_mime_type: "application/json",
         },
-      ],
-      generationConfig: {
-        response_mime_type: "application/json",
-      },
-    }),
-  });
+      }),
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    logger.error(`Gemini API error (${response.status}): ${errorText}`);
-    throw new Error(`Gagal memproses gambar dengan Gemini (${response.status})`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      logger.warn(`Gemini API (${model}) returned ${response.status}: ${errorText}`);
+      lastError = new Error(`Gagal memproses gambar dengan Gemini (${response.status})`);
+      if (response.status === 503 || response.status === 429 || response.status >= 500) {
+        continue;
+      }
+      throw lastError;
+    }
+
+    const result: any = await response.json();
+    const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) {
+      throw new Error("Gemini tidak mengembalikan hasil teks dari nota.");
+    }
+
+    const parsedJson = JSON.parse(cleanJsonString(text));
+    return ReceiptExtractionSchema.parse(parsedJson);
   }
 
-  const result: any = await response.json();
-  const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) {
-    throw new Error("Gemini tidak mengembalikan hasil teks dari nota.");
-  }
-
-  const parsedJson = JSON.parse(cleanJsonString(text));
-  return ReceiptExtractionSchema.parse(parsedJson);
+  throw lastError || new Error("Gagal memproses gambar dengan semua model Gemini yang tersedia.");
 }
 
 async function extractWithOpenAI(filePath: string, mimeType: string, base64Data: string): Promise<ReceiptExtraction> {

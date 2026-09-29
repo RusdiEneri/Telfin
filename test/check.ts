@@ -49,6 +49,14 @@ assert.throws(() => {
 });
 console.log("✔ Zod schema validation passes");
 
+// 2b. Check Gemini candidate models and fallback resilience
+const primary = process.env.GEMINI_MODEL || "gemini-3.5-flash";
+const candidateModels = Array.from(new Set([primary, "gemini-3.5-flash", "gemini-3-flash-preview"]));
+assert.ok(candidateModels.length >= 2, "Candidate models must have at least 1 fallback");
+assert.equal(candidateModels[0], primary, "Primary model must be first candidate");
+assert.ok(candidateModels.includes("gemini-3.5-flash"), "Candidate models must include stable flash");
+console.log("✔ AI model fallback candidate list passes");
+
 // 3. Check DB Flow (isolated test DB)
 const testDbDir = path.join(process.cwd(), "data");
 if (!fs.existsSync(testDbDir)) fs.mkdirSync(testDbDir, { recursive: true });

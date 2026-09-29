@@ -475,8 +475,15 @@ export async function handlePhoto(ctx: Context) {
       }
     }
 
-    const errorMsg =
-      "Maaf, saya tidak bisa membaca total di nota ini. Pastikan foto tidak blur, tidak terpotong, dan terlihat jelas. Atau kamu bisa input manual dengan mengetik: /expense [jumlah] [keterangan]";
+    const isServerError =
+      error?.message?.includes("503") ||
+      error?.message?.includes("Gemini") ||
+      error?.message?.includes("OpenAI") ||
+      error?.message?.includes("fetch");
+
+    const errorMsg = isServerError
+      ? "Layanan AI sedang mengalami gangguan atau beban tinggi. Silakan coba kirim ulang beberapa saat lagi, atau catat manual dengan: /expense [jumlah] [keterangan]"
+      : "Maaf, saya tidak bisa membaca total di nota ini. Pastikan foto tidak blur, tidak terpotong, dan terlihat jelas. Atau kamu bisa input manual dengan mengetik: /expense [jumlah] [keterangan]";
 
     await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, errorMsg);
   }
