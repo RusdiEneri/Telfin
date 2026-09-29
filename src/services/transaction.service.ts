@@ -19,6 +19,7 @@ export interface TransactionRecord {
   occurred_at: string | null;
   status: "pending" | "confirmed" | "cancelled";
   source: string | null;
+  file_hash: string | null;
   created_at: string;
 }
 
@@ -26,6 +27,14 @@ export interface WalletBalance {
   balance: number;
   totalIncome: number;
   totalExpense: number;
+}
+
+export interface MonthlyRecap {
+  yearMonth: string;
+  totalIncome: number;
+  totalExpense: number;
+  netBalance: number;
+  topCategories: Array<{ category: string; total: number }>;
 }
 
 export function getOrCreateUserAndWallet(telegramUserId: string, name?: string): UserWallet {
@@ -62,7 +71,8 @@ export function getOrCreateUserAndWallet(telegramUserId: string, name?: string):
 export function createPendingTransaction(
   walletId: number,
   data: ReceiptExtraction,
-  imagePath?: string
+  imagePath?: string,
+  fileHash?: string
 ): number {
   const insert = db.prepare(`
     INSERT INTO transactions (
@@ -74,8 +84,9 @@ export function createPendingTransaction(
       note,
       occurred_at,
       status,
-      source
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+      source,
+      file_hash
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
   `);
 
   const info = insert.run(
@@ -86,7 +97,52 @@ export function createPendingTransaction(
     data.category || "Lain-lain",
     data.note || null,
     data.occurred_at || new Date().toISOString().slice(0, 10),
-    imagePath || null
+    imagePath || null,
+    fileHash || null
+  );
+
+  return Number(info.lastInsertRowid);
+}
+
+export function findConfirmedTransactionByHash(
+  walletId: number,
+  fileHash: string
+): TransactionRecord | undefined {
+  const query = db.prepare(`
+    SELECT * FROM transactions
+    WHERE wallet_id = ? AND file_hash = ? AND status = 'confirmed'
+    LIMIT 1
+  `);
+  return query.get(walletId, fileHash) as TransactionRecord | undefined;
+}
+
+export function createManualTransaction(
+  walletId: number,
+  type: "income" | "expense",
+  amount: number,
+  note: string,
+  category = "Manual"
+): number {
+  const insert = db.prepare(`
+    INSERT INTO transactions (
+      wallet_id,
+      type,
+      amount,
+      note,
+      category,
+      occurred_at,
+      status,
+      source
+    ) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', 'manual')
+  `);
+
+  const info = insert.run(
+    walletId,
+    type,
+    amount,
+    note || null,
+    category,
+    new Date().toISOString().slice(0, 10)
   );
 
   return Number(info.lastInsertRowid);
@@ -142,4 +198,52 @@ export function getRecentTransactions(walletId: number, limit = 5): TransactionR
     LIMIT ?
   `);
   return query.all(walletId, limit) as TransactionRecord[];
+}
+
+export function getMonthlyRecap(walletId: number, yearMonth: string): MonthlyRecap {
+  const summaryQuery = db.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END), 0) AS total_income,
+      COALESCE(SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END), 0) AS total_expense
+    FROM transactions
+    WHERE wallet_id = ? AND status = 'confirmed'
+      AND COALESCE(occurred_at, substr(created_at, 1, 10)) LIKE ? || '%'
+  `);
+
+  const summary = summaryQuery.get(walletId, yearMonth) as {
+    total_income: number;
+    total_expense: number;
+  };
+
+  const totalIncome = summary ? Number(summary.total_income) : 0;
+  const totalExpense = summary ? Number(summary.total_expense) : 0;
+  const netBalance = totalIncome - totalExpense;
+
+  const topCatQuery = db.prepare(`
+    SELECT category, SUM(amount) AS total
+    FROM transactions
+    WHERE wallet_id = ? AND status = 'confirmed' AND type = 'expense'
+      AND COALESCE(occurred_at, substr(created_at, 1, 10)) LIKE ? || '%'
+    GROUP BY category
+    ORDER BY total DESC
+    LIMIT 3
+  `);
+
+  const topCategories = (
+    topCatQuery.all(walletId, yearMonth) as Array<{
+      category: string;
+      total: number;
+    }>
+  ).map((row) => ({
+    category: row.category || "Lain-lain",
+    total: Number(row.total),
+  }));
+
+  return {
+    yearMonth,
+    totalIncome,
+    totalExpense,
+    netBalance,
+    topCategories,
+  };
 }

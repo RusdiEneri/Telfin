@@ -25,9 +25,11 @@ CREATE TABLE IF NOT EXISTS transactions (
   occurred_at TEXT,
   status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'confirmed', 'cancelled')),
   source TEXT,
+  file_hash TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(wallet_id) REFERENCES wallets(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_user_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_wallet_status ON transactions(wallet_id, status);
+CREATE INDEX IF NOT EXISTS idx_transactions_file_hash ON transactions(file_hash);
