@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   category TEXT,
   note TEXT,
   occurred_at TEXT,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'confirmed', 'cancelled')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'confirmed', 'cancelled', 'deleted')),
   source TEXT,
   file_hash TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,

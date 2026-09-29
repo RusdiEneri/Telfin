@@ -207,6 +207,55 @@ assert.equal(cols.some((c) => c.name === "file_hash"), true, "Migrated table mus
 legacyDb.close();
 console.log("✔ SQLite auto-migration passes");
 
+// 5. Check Update & Soft Delete CRUD operations
+const currentBal = getBalance(walletId);
+
+// Insert a test transaction to edit and delete
+const testTxRes = testDb.prepare(`
+  INSERT INTO transactions (wallet_id, type, amount, note, status, source)
+  VALUES (?, 'expense', 50000, 'makan siang', 'confirmed', 'manual')
+`).run(walletId);
+const testTxId = Number(testTxRes.lastInsertRowid);
+assert.equal(getBalance(walletId), currentBal - 50000, "Balance must deduct 50000");
+
+// Update transaction amount to 75000 and note to 'makan malam di warteg'
+const updateRes = testDb.prepare(`
+  UPDATE transactions
+  SET amount = ?, note = ?, merchant = ?
+  WHERE id = ? AND wallet_id = ? AND status = 'confirmed'
+`).run(75000, "makan malam di warteg", "makan malam di warteg", testTxId, walletId);
+assert.equal(updateRes.changes, 1, "Should update 1 transaction");
+
+const updatedTx = testDb.prepare("SELECT * FROM transactions WHERE id = ?").get(testTxId) as any;
+assert.equal(updatedTx.amount, 75000);
+assert.equal(updatedTx.note, "makan malam di warteg");
+assert.equal(getBalance(walletId), currentBal - 75000, "Balance must reflect updated amount 75000");
+
+// Soft delete the transaction
+const deleteRes = testDb.prepare(`
+  UPDATE transactions
+  SET status = 'deleted'
+  WHERE id = ? AND wallet_id = ? AND status = 'confirmed'
+`).run(testTxId, walletId);
+assert.equal(deleteRes.changes, 1, "Should soft delete 1 transaction");
+
+// Verify transaction still exists in DB for audit trail
+const deletedTx = testDb.prepare("SELECT * FROM transactions WHERE id = ?").get(testTxId) as any;
+assert.equal(deletedTx.status, "deleted", "Transaction status must be deleted");
+
+// Verify getBalance excludes deleted transaction
+assert.equal(getBalance(walletId), currentBal, "Balance must exclude soft-deleted transaction");
+
+// Verify recent transactions excludes deleted transaction
+const recent = testDb.prepare(`
+  SELECT * FROM transactions
+  WHERE wallet_id = ? AND status = 'confirmed'
+  ORDER BY id DESC LIMIT 5
+`).all(walletId) as any[];
+assert.equal(recent.some((t) => t.id === testTxId), false, "Recent transactions must exclude deleted tx");
+
+console.log("✔ Soft-delete and Update CRUD operations pass");
+
 testDb.close();
 console.log("✔ SQLite transaction & balance flow passes");
 

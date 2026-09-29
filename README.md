@@ -17,7 +17,7 @@ Bot Telegram ringan untuk mencatat pemasukan dan pengeluaran secara otomatis dar
 Clone repositori dan pasang dependensi:
 ```bash
 git clone https://github.com/RusdiEneri/Telfin
-cd telfin
+cd Telfin
 npm install
 ```
 

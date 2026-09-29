@@ -17,7 +17,7 @@ export interface TransactionRecord {
   category: string | null;
   note: string | null;
   occurred_at: string | null;
-  status: "pending" | "confirmed" | "cancelled";
+  status: "pending" | "confirmed" | "cancelled" | "deleted";
   source: string | null;
   file_hash: string | null;
   created_at: string;
@@ -168,6 +168,31 @@ export function cancelTransaction(transactionId: number, walletId: number): bool
   return result.changes > 0;
 }
 
+export function softDeleteTransaction(transactionId: number, walletId: number): boolean {
+  const update = db.prepare(`
+    UPDATE transactions
+    SET status = 'deleted'
+    WHERE id = ? AND wallet_id = ? AND status = 'confirmed'
+  `);
+  const result = update.run(transactionId, walletId);
+  return result.changes > 0;
+}
+
+export function updateTransaction(
+  transactionId: number,
+  walletId: number,
+  amount: number,
+  description: string
+): boolean {
+  const update = db.prepare(`
+    UPDATE transactions
+    SET amount = ?, note = ?, merchant = ?
+    WHERE id = ? AND wallet_id = ? AND status = 'confirmed'
+  `);
+  const result = update.run(amount, description, description, transactionId, walletId);
+  return result.changes > 0;
+}
+
 export function getTransactionById(id: number): TransactionRecord | undefined {
   const query = db.prepare("SELECT * FROM transactions WHERE id = ?");
   return query.get(id) as TransactionRecord | undefined;
@@ -189,6 +214,8 @@ export function getWalletBalance(walletId: number): WalletBalance {
 
   return { balance, totalIncome, totalExpense };
 }
+
+export const getBalance = getWalletBalance;
 
 export function getRecentTransactions(walletId: number, limit = 5): TransactionRecord[] {
   const query = db.prepare(`

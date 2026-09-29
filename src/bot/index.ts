@@ -6,9 +6,12 @@ import {
   handleHelp,
   handleExpense,
   handleIncome,
+  handleHapus,
+  handleEdit,
   handleRekap,
   handlePhoto,
   handleCallbackQuery,
+  handleTextMessage,
 } from "./handlers.js";
 
 export function createBot(token: string): Bot {
@@ -21,9 +24,12 @@ export function createBot(token: string): Bot {
   bot.command("help", handleHelp);
   bot.command("expense", handleExpense);
   bot.command("income", handleIncome);
+  bot.command("hapus", handleHapus);
+  bot.command("edit", handleEdit);
 
   bot.on(":photo", handlePhoto);
   bot.on("callback_query:data", handleCallbackQuery);
+  bot.on("message:text", handleTextMessage);
 
   return bot;
 }
