@@ -224,6 +224,33 @@ export async function handleSaldo(ctx: Context) {
   await ctx.reply(text, { parse_mode: "Markdown" });
 }
 
+export function formatTransactionDetail(tx: {
+  id: number;
+  type: "income" | "expense";
+  amount: number;
+  merchant?: string | null;
+  category?: string | null;
+  note?: string | null;
+  occurred_at?: string | null;
+  created_at: string;
+}): string {
+  const icon = tx.type === "income" ? "🟢" : "🔴";
+  const typeLabel = tx.type === "income" ? "Pemasukan" : "Pengeluaran";
+  const date = tx.occurred_at || tx.created_at.slice(0, 10);
+
+  const lines = [
+    `${icon} *Transaksi [#${tx.id}] • ${typeLabel}*`,
+    `💵 *Nominal*: *${formatRupiah(tx.amount)}*`,
+  ];
+
+  if (tx.merchant) lines.push(`🏪 *Merchant*: ${tx.merchant}`);
+  if (tx.category) lines.push(`📂 *Kategori*: ${tx.category}`);
+  lines.push(`📅 *Tanggal*: ${date}`);
+  if (tx.note) lines.push(`📝 *Keterangan*: ${tx.note}`);
+
+  return lines.join("\n");
+}
+
 export async function handleRiwayat(ctx: Context) {
   const user = getTelegramUser(ctx);
   const { walletId } = getOrCreateUserAndWallet(user.id, user.name);
@@ -234,13 +261,12 @@ export async function handleRiwayat(ctx: Context) {
     return;
   }
 
-  for (const tx of transactions) {
-    const icon = tx.type === "income" ? "🟢" : "🔴";
-    const desc = tx.merchant || tx.note || "Transaksi";
-    const date = tx.occurred_at || tx.created_at.slice(0, 10);
-    const text = `${date} | ${desc} | ${icon} ${formatRupiah(tx.amount)} [#${tx.id}]`;
+  await ctx.reply("📜 *5 Transaksi Terakhir:*", { parse_mode: "Markdown" });
 
+  for (const tx of transactions) {
+    const text = formatTransactionDetail(tx);
     await ctx.reply(text, {
+      parse_mode: "Markdown",
       reply_markup: createTransactionActionKeyboard(tx.id),
     });
   }
@@ -553,12 +579,9 @@ export async function handleCallbackQuery(ctx: Context) {
       return;
     }
 
-    const icon = tx.type === "income" ? "🟢" : "🔴";
-    const desc = tx.merchant || tx.note || "Transaksi";
-    const date = tx.occurred_at || tx.created_at.slice(0, 10);
-    const text = `${date} | ${desc} | ${icon} ${formatRupiah(tx.amount)} [#${tx.id}]`;
-
+    const text = formatTransactionDetail(tx);
     await ctx.editMessageText(text, {
+      parse_mode: "Markdown",
       reply_markup: createTransactionActionKeyboard(tx.id),
     });
     await ctx.answerCallbackQuery({ text: "Penghapusan dibatalkan." });

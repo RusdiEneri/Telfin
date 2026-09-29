@@ -2,7 +2,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import db from "./db/index.js";
-import { createBot } from "./bot/index.js";
+import { createBot, BOT_COMMANDS } from "./bot/index.js";
 import { logger } from "./utils/logger.js";
 import { cleanupPendingUploads } from "./services/receipt.service.js";
 
@@ -51,7 +51,13 @@ process.once("SIGTERM", () => gracefulShutdown("SIGTERM"));
 
 logger.info("Memulai bot Telegram (long polling)...");
 bot.start({
-  onStart: (botInfo) => {
+  onStart: async (botInfo) => {
     logger.info(`Bot @${botInfo.username} berhasil berjalan! Menunggu pesan/foto...`);
+    try {
+      await bot.api.setMyCommands(BOT_COMMANDS);
+      logger.info("Menu commands Telegram berhasil disinkronkan.");
+    } catch (cmdErr) {
+      logger.error("Gagal menyinkronkan menu commands Telegram:", cmdErr);
+    }
   },
 });
