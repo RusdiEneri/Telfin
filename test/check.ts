@@ -6,8 +6,9 @@ import { formatRupiah, parseRupToInt, parseRupiah } from "../src/utils/money.js"
 import { ReceiptExtractionSchema } from "../src/validations/receipt.schema.js";
 import { logger } from "../src/utils/logger.js";
 import { cleanupPendingUploads } from "../src/services/receipt.service.js";
-import { formatTransactionDetail } from "../src/bot/handlers.js";
+import { formatTransactionDetail, formatReceiptPreview } from "../src/bot/handlers.js";
 import { getAllowedUserIds, BOT_COMMANDS } from "../src/bot/index.js";
+import { createTransactionConfirmationKeyboard, createWalletSelectionKeyboard } from "../src/bot/keyboards.js";
 import db, { initDb, dbPath } from "../src/db/index.js";
 
 console.log("▶ Running Telfin logic checks...");
@@ -81,8 +82,46 @@ assert.ok(detailFormatted.includes("2026-09-29"), "Must include date");
 assert.ok(detailFormatted.includes("Snack & Minum"), "Must include note");
 console.log("✔ Rich transaction detail formatting passes");
 
+// 2c2. Check formatReceiptPreview and Confirmation / Wallet Keyboards
+const previewFormatted = formatReceiptPreview(
+  {
+    type: "expense",
+    amount: 52500,
+    merchant: "Indomaret",
+    category: "Makanan & Minuman",
+    occurred_at: "2026-09-29",
+    note: "Snack",
+  },
+  "Dompet Utama (Cash)"
+);
+assert.ok(previewFormatted.includes("Akan dicatat ke: 💳"), "Must include designated wallet prefix");
+assert.ok(previewFormatted.includes("Dompet Utama (Cash)"), "Must include designated wallet name");
+assert.ok(previewFormatted.includes("Rp52.500"), "Must format amount in Rupiah");
+
+const confirmKb = createTransactionConfirmationKeyboard(99);
+const flatButtons = confirmKb.inline_keyboard.flat();
+assert.ok(flatButtons.some((b) => b.callback_data === "confirm:99"), "Must have confirm button");
+assert.ok(flatButtons.some((b) => b.callback_data === "cancel:99"), "Must have cancel button");
+assert.ok(flatButtons.some((b) => b.callback_data === "change_wallet_99"), "Must have change wallet button");
+
+const walletKb = createWalletSelectionKeyboard(
+  99,
+  [
+    { id: 1, name: "Dompet Utama", is_default: 1 },
+    { id: 2, name: "Bank BCA", is_default: 0 },
+  ],
+  1
+);
+const flatWalletButtons = walletKb.inline_keyboard.flat();
+assert.ok(flatWalletButtons.some((b) => b.callback_data === "set_wallet_99_1"), "Must have button for wallet 1");
+assert.ok(flatWalletButtons.some((b) => b.callback_data === "set_wallet_99_2"), "Must have button for wallet 2");
+assert.ok(flatWalletButtons.some((b) => b.callback_data === "back_preview_99"), "Must have back to preview button");
+console.log("✔ Receipt preview formatting & wallet selection keyboards pass");
+
 // 2d. Check BOT_COMMANDS and whitelist access control parsing
 assert.ok(BOT_COMMANDS.length >= 10, "Must register at least 10 commands in menu");
+assert.ok(BOT_COMMANDS.some((c) => c.command === "dompet"));
+assert.ok(BOT_COMMANDS.some((c) => c.command === "setdefault"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "riwayat"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "saldo"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "rekap"));
@@ -279,6 +318,26 @@ if (!cols.some((col) => col.name === "file_hash")) {
 cols = legacyDb.pragma("table_info(transactions)") as Array<{ name: string }>;
 assert.equal(cols.some((c) => c.name === "file_hash"), true, "Migrated table must have file_hash");
 legacyDb.close();
+
+// Auto-migration test for wallets is_default
+const legacyWalletsDb = new Database(":memory:");
+legacyWalletsDb.exec(`
+  CREATE TABLE wallets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'IDR'
+  );
+`);
+let walletCols = legacyWalletsDb.pragma("table_info(wallets)") as Array<{ name: string }>;
+assert.equal(walletCols.some((c) => c.name === "is_default"), false, "Legacy wallets lacks is_default");
+if (!walletCols.some((c) => c.name === "is_default")) {
+  legacyWalletsDb.exec("ALTER TABLE wallets ADD COLUMN is_default INTEGER NOT NULL DEFAULT 1;");
+}
+walletCols = legacyWalletsDb.pragma("table_info(wallets)") as Array<{ name: string }>;
+assert.equal(walletCols.some((c) => c.name === "is_default"), true, "Migrated wallets has is_default");
+legacyWalletsDb.close();
+
 console.log("✔ SQLite auto-migration passes");
 
 // 5. Check Update & Soft Delete CRUD operations
@@ -329,6 +388,31 @@ const recent = testDb.prepare(`
 assert.equal(recent.some((t) => t.id === testTxId), false, "Recent transactions must exclude deleted tx");
 
 console.log("✔ Soft-delete and Update CRUD operations pass");
+
+// Check multi-wallet operations
+const wallet2Res = testDb.prepare("INSERT INTO wallets (user_id, name, is_default) VALUES (?, ?, 0)").run(userId, "Bank BCA");
+const wallet2Id = Number(wallet2Res.lastInsertRowid);
+
+// Pending receipt created for default wallet
+const pendingForW1 = testDb.prepare(`
+  INSERT INTO transactions (wallet_id, type, amount, status)
+  VALUES (?, 'expense', 25000, 'pending')
+`).run(walletId);
+const pendingW1Id = Number(pendingForW1.lastInsertRowid);
+
+// User changes wallet from walletId to wallet2Id
+const updateWalletRes = testDb.prepare(`
+  UPDATE transactions
+  SET wallet_id = ?
+  WHERE id = ? AND status = 'pending'
+`).run(wallet2Id, pendingW1Id);
+assert.equal(updateWalletRes.changes, 1, "Should update pending transaction wallet");
+
+// Confirm the transaction
+testDb.prepare("UPDATE transactions SET status = 'confirmed' WHERE id = ?").run(pendingW1Id);
+
+// Check that wallet2 balance is updated, and wallet1 balance remains unaffected
+assert.equal(getBalance(wallet2Id), -25000, "Wallet 2 must reflect confirmed expense");
 
 testDb.close();
 console.log("✔ SQLite transaction & balance flow passes");

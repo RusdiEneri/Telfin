@@ -15,10 +15,15 @@ import {
   handlePhoto,
   handleCallbackQuery,
   handleTextMessage,
+  handleDompet,
+  handleSetDefault,
+  handleTambahDompet,
 } from "./handlers.js";
 
 export const BOT_COMMANDS = [
   { command: "saldo", description: "Cek saldo & ringkasan dompet" },
+  { command: "dompet", description: "Lihat daftar dompet & saldo" },
+  { command: "setdefault", description: "Ubah dompet utama (<nama_dompet>)" },
   { command: "riwayat", description: "Lihat 5 transaksi terakhir & kelola" },
   { command: "rekap", description: "Ringkasan bulanan & kategori terbesar" },
   { command: "expense", description: "Catat pengeluaran (<jumlah> <ket>)" },
@@ -78,6 +83,9 @@ export function createBot(token: string): Bot {
 
   bot.command("start", handleStart);
   bot.command("saldo", handleSaldo);
+  bot.command("dompet", handleDompet);
+  bot.command("setdefault", handleSetDefault);
+  bot.command("tambahdompet", handleTambahDompet);
   bot.command("riwayat", handleRiwayat);
   bot.command("rekap", handleRekap);
   bot.command("help", handleHelp);

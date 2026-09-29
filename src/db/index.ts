@@ -32,6 +32,13 @@ export function initDb(): Database.Database {
     currentDb.exec("ALTER TABLE transactions ADD COLUMN file_hash TEXT;");
   }
 
+  // Auto-migrate: ensure wallets table has is_default column
+  const walletColumns = currentDb.pragma("table_info(wallets)") as Array<{ name: string }>;
+  if (walletColumns.length > 0 && !walletColumns.some((col) => col.name === "is_default")) {
+    currentDb.exec("ALTER TABLE wallets ADD COLUMN is_default INTEGER NOT NULL DEFAULT 1;");
+    currentDb.exec("UPDATE wallets SET is_default = 1 WHERE id IN (SELECT MIN(id) FROM wallets GROUP BY user_id);");
+  }
+
   // Auto-migrate: ensure 'deleted' status is supported in transactions CHECK constraint
   const tableInfo = currentDb
     .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transactions'")
