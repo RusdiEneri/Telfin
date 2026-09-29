@@ -34,3 +34,32 @@ CREATE TABLE IF NOT EXISTS transactions (
 CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_user_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_wallet_status ON transactions(wallet_id, status);
 CREATE INDEX IF NOT EXISTS idx_transactions_file_hash ON transactions(file_hash);
+
+CREATE TABLE IF NOT EXISTS budgets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  wallet_id INTEGER NOT NULL,
+  category TEXT NOT NULL,
+  amount_limit INTEGER NOT NULL,
+  month_year TEXT NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(wallet_id, category, month_year),
+  FOREIGN KEY(wallet_id) REFERENCES wallets(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_budgets_wallet_month ON budgets(wallet_id, month_year);
+
+CREATE TABLE IF NOT EXISTS recurrings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  wallet_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  category TEXT,
+  type TEXT NOT NULL CHECK(type IN ('income', 'expense')),
+  due_day INTEGER NOT NULL CHECK(due_day BETWEEN 1 AND 31),
+  is_active INTEGER NOT NULL DEFAULT 1,
+  last_reminded_date TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(wallet_id) REFERENCES wallets(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_recurrings_wallet_active ON recurrings(wallet_id, is_active);

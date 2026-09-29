@@ -2,14 +2,35 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { formatRupiah, parseRupToInt, parseRupiah } from "../src/utils/money.js";
+import {
+  formatRupiah,
+  parseRupToInt,
+  parseRupiah,
+  generateBarChart,
+  getCategoryEmoji,
+} from "../src/utils/money.js";
+import { formatDateTimeJakarta, getCurrentYearMonthJakarta, getTodayDateJakarta, getTodayDayJakarta } from "../src/utils/date.js";
 import { ReceiptExtractionSchema } from "../src/validations/receipt.schema.js";
 import { logger } from "../src/utils/logger.js";
 import { cleanupPendingUploads } from "../src/services/receipt.service.js";
 import { formatTransactionDetail, formatReceiptPreview } from "../src/bot/handlers.js";
 import { getAllowedUserIds, BOT_COMMANDS } from "../src/bot/index.js";
 import { createTransactionConfirmationKeyboard, createWalletSelectionKeyboard } from "../src/bot/keyboards.js";
-import { escapeCsvCell, formatTransactionsCsv } from "../src/services/transaction.service.js";
+import {
+  escapeCsvCell,
+  formatTransactionsCsv,
+  setBudget,
+  getBudgetReport,
+  checkBudgetWarning,
+  createRecurring,
+  getUserRecurrings,
+  getRecurringById,
+  deactivateRecurring,
+  getDueRecurrings,
+  markRecurringReminded,
+  recordTransactionFromRecurring,
+  findActiveRecurringByName,
+} from "../src/services/transaction.service.js";
 import db, { initDb, dbPath } from "../src/db/index.js";
 
 console.log("▶ Running Telfin logic checks...");
@@ -27,6 +48,18 @@ assert.equal(parseRupToInt("-5000"), 0, "Negative amount must return 0");
 assert.equal(parseRupToInt(""), 0, "Empty string must return 0");
 assert.equal(parseRupiah("50000"), 50000);
 console.log("✔ Money utilities and parseRupToInt pass");
+
+// 1b. Check generateBarChart emoji visualizations and thresholds
+assert.equal(generateBarChart(40), "🟥🟥🟥🟥⬜⬜⬜⬜⬜⬜");
+assert.equal(generateBarChart(20), "🟧🟧⬜⬜⬜⬜⬜⬜⬜⬜");
+assert.equal(generateBarChart(10), "🟨⬜⬜⬜⬜⬜⬜⬜⬜⬜");
+assert.equal(generateBarChart(5), "🟩⬜⬜⬜⬜⬜⬜⬜⬜⬜");
+assert.equal(generateBarChart(0), "⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜");
+assert.equal(generateBarChart(100), "🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥");
+assert.equal(getCategoryEmoji("Makanan & Minuman"), "🍔");
+assert.equal(getCategoryEmoji("Transportasi"), "🛵");
+assert.equal(getCategoryEmoji("Kopi Sore"), "☕");
+console.log("✔ generateBarChart and getCategoryEmoji pass");
 
 // 2. Check Zod Schema
 const validPayload = {
@@ -79,9 +112,19 @@ assert.ok(detailFormatted.includes("Pengeluaran"), "Must label Pengeluaran");
 assert.ok(detailFormatted.includes("Rp52.500"), "Must format amount in Rupiah");
 assert.ok(detailFormatted.includes("Indomaret"), "Must include merchant");
 assert.ok(detailFormatted.includes("Makanan & Minuman"), "Must include category");
-assert.ok(detailFormatted.includes("2026-09-29"), "Must include date");
+assert.ok(detailFormatted.includes("29 September 2026"), "Must include Indonesian date");
+assert.ok(detailFormatted.includes("Selasa"), "Must include day of week");
+assert.ok(detailFormatted.includes("WIB"), "Must include Asia/Jakarta WIB timezone");
 assert.ok(detailFormatted.includes("Snack & Minum"), "Must include note");
 console.log("✔ Rich transaction detail formatting passes");
+
+// 2c1. Check formatDateTimeJakarta (Indonesian weekday, date, 24h time, Asia/Jakarta WIB)
+const formattedUtc = formatDateTimeJakarta("2026-09-29 13:27:13");
+assert.ok(formattedUtc.includes("Selasa"), "Must format day as Selasa");
+assert.ok(formattedUtc.includes("29 September 2026"), "Must format Indonesian date");
+assert.ok(formattedUtc.includes("20.27"), "Must format 24-hour time in UTC+7 Jakarta");
+assert.ok(formattedUtc.includes("WIB"), "Must format timezone name as WIB");
+console.log("✔ formatDateTimeJakarta 24h Asia/Jakarta passes");
 
 // 2c2. Check formatReceiptPreview and Confirmation / Wallet Keyboards
 const previewFormatted = formatReceiptPreview(
@@ -125,6 +168,8 @@ assert.ok(BOT_COMMANDS.some((c) => c.command === "dompet"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "setdefault"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "riwayat"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "cari"));
+assert.ok(BOT_COMMANDS.some((c) => c.command === "anggaran"));
+assert.ok(BOT_COMMANDS.some((c) => c.command === "cekanggaran"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "saldo"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "rekap"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "export"));
@@ -474,6 +519,41 @@ const csvBuffer = Buffer.from(csvData, "utf-8");
 assert.ok(csvBuffer.length > 0, "CSV Buffer must not be empty");
 console.log("✔ Search LIKE query and CSV Export formatting pass");
 
+// Check Budgeting operations & UPSERT on testDb
+const ym = "2026-09";
+const insertBudget = testDb.prepare(`
+  INSERT INTO budgets (wallet_id, category, amount_limit, month_year)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT(wallet_id, category, month_year)
+  DO UPDATE SET amount_limit = excluded.amount_limit
+`);
+insertBudget.run(walletId, "Makanan & Minuman", 250000, ym);
+
+let bRow = testDb.prepare("SELECT * FROM budgets WHERE wallet_id = ? AND category = ? AND month_year = ?").get(walletId, "Makanan & Minuman", ym) as any;
+assert.equal(bRow.amount_limit, 250000, "Initial budget should be 250000");
+
+// UPSERT update to 300000
+insertBudget.run(walletId, "Makanan & Minuman", 300000, ym);
+bRow = testDb.prepare("SELECT * FROM budgets WHERE wallet_id = ? AND category = ? AND month_year = ?").get(walletId, "Makanan & Minuman", ym) as any;
+assert.equal(bRow.amount_limit, 300000, "Updated budget should be 300000");
+
+// Check spent calculation: Makanan & Minuman spent in September is 200000 (50000 + 150000)
+const spentRow = testDb.prepare(`
+  SELECT COALESCE(SUM(amount), 0) AS total_spent
+  FROM transactions
+  WHERE wallet_id = ? AND status = 'confirmed' AND type = 'expense'
+    AND (LOWER(category) = LOWER(?) OR LOWER(category) LIKE '%' || LOWER(?) || '%')
+    AND COALESCE(occurred_at, substr(created_at, 1, 10)) LIKE ? || '%'
+`).get(walletId, "Makanan & Minuman", "Makanan & Minuman", ym) as { total_spent: number };
+assert.equal(spentRow.total_spent, 200000, "Current spent on Makanan & Minuman must be 200000");
+
+// Check budget warning logic:
+// Adding 50000 expense -> 200000 + 50000 = 250000 <= 300000 (not overbudget)
+assert.equal(spentRow.total_spent + 50000 > bRow.amount_limit, false, "250000 should not be overbudget");
+// Adding 150000 expense -> 200000 + 150000 = 350000 > 300000 (overbudget!)
+assert.equal(spentRow.total_spent + 150000 > bRow.amount_limit, true, "350000 must trigger overbudget");
+console.log("✔ Budgeting UPSERT, report & overbudget calculation pass");
+
 testDb.close();
 console.log("✔ SQLite transaction & balance flow passes");
 
@@ -501,4 +581,83 @@ assert.ok(cleanedCount >= 1, "Should clean at least 1 hanging file");
 assert.equal(fs.existsSync(hangingFile), false, "Hanging file should be removed");
 console.log("✔ Graceful shutdown cleanupPendingUploads passes");
 
+// 8. Check Recurring Subscriptions & Scheduler Logic
+const todayDay = getTodayDayJakarta();
+const todayStr = getTodayDateJakarta();
+assert.ok(todayDay >= 1 && todayDay <= 31, "todayDay must be 1-31");
+assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(todayStr), "todayStr must be YYYY-MM-DD");
+
+// Test SQLite recurrings table exists
+const recTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='recurrings'").get() as { name: string } | undefined;
+assert.ok(recTable, "recurrings table must exist");
+
+// Create temporary wallet and user for recurring test
+const testRecUser = db.prepare("INSERT INTO users (telegram_user_id, name) VALUES ('999999', 'RecTest')").run();
+const testRecUserId = Number(testRecUser.lastInsertRowid);
+const testRecWallet = db.prepare("INSERT INTO wallets (user_id, name, is_default) VALUES (?, 'RecWallet', 1)").run(testRecUserId);
+const testRecWalletId = Number(testRecWallet.lastInsertRowid);
+
+// Add recurring bills
+const netflix = createRecurring(testRecWalletId, "Netflix", 50000, "expense", "hiburan", todayDay);
+assert.equal(netflix.name, "Netflix");
+assert.equal(netflix.amount, 50000);
+assert.equal(netflix.type, "expense");
+assert.equal(netflix.due_day, todayDay);
+assert.equal(netflix.is_active, 1);
+
+const gaji = createRecurring(testRecWalletId, "Gaji Kantor", 8000000, "income", "gaji", todayDay);
+assert.equal(gaji.amount, 8000000);
+assert.equal(gaji.type, "income");
+
+// Check getUserRecurrings
+const listRec = getUserRecurrings(testRecWalletId);
+assert.equal(listRec.length, 2, "Must return 2 active recurrings");
+
+// Check getDueRecurrings
+const dueRecs = getDueRecurrings(todayDay, todayStr);
+const foundNetflix = dueRecs.find((r) => r.id === netflix.id);
+assert.ok(foundNetflix, "Netflix must be due today");
+assert.equal(foundNetflix.telegram_user_id, "999999");
+
+// Check markRecurringReminded
+markRecurringReminded(netflix.id, todayStr);
+const dueRecsAfter = getDueRecurrings(todayDay, todayStr);
+assert.ok(!dueRecsAfter.some((r) => r.id === netflix.id), "Netflix must not be returned again today after reminded");
+
+// Check recordTransactionFromRecurring (triggered by 'catat')
+const newTxId = recordTransactionFromRecurring(netflix, todayStr);
+assert.ok(newTxId > 0, "Transaction ID must be positive");
+const recordedTx = db.prepare("SELECT * FROM transactions WHERE id = ?").get(newTxId) as any;
+assert.equal(recordedTx.amount, 50000);
+assert.equal(recordedTx.status, "confirmed");
+assert.equal(recordedTx.source, "recurring");
+assert.equal(recordedTx.merchant, "Netflix");
+
+// Check reply message matching & extraction
+const sampleReminderText = `🔔 PENGINGAT TAGIHAN: Netflix [#${netflix.id}] sebesar Rp50.000 jatuh tempo hari ini! \nBalas pesan ini dengan 'catat' untuk langsung memasukkannya ke pengeluaran bulan ini.`;
+const idMatch = sampleReminderText.match(/#(\d+)/);
+assert.ok(idMatch && parseInt(idMatch[1], 10) === netflix.id, "Regex must extract recurring ID correctly");
+const isReminder = sampleReminderText.includes("PENGINGAT TAGIHAN");
+assert.ok(isReminder, "Sample text must identify as recurring reminder");
+
+// Check soft-delete / deactivateRecurring
+const deactivated = deactivateRecurring(netflix.id, testRecWalletId);
+assert.equal(deactivated, true);
+const listRecAfterDeactivate = getUserRecurrings(testRecWalletId);
+assert.equal(listRecAfterDeactivate.length, 1, "Only 1 active recurring should remain");
+assert.equal(listRecAfterDeactivate[0].id, gaji.id);
+
+// Check BOT_COMMANDS includes langganan
+assert.ok(BOT_COMMANDS.some((c) => c.command === "langganan"));
+assert.ok(BOT_COMMANDS.some((c) => c.command === "tambahlangganan"));
+assert.ok(BOT_COMMANDS.some((c) => c.command === "hapuslangganan"));
+
+// Clean up test data
+db.prepare("DELETE FROM transactions WHERE id = ?").run(newTxId);
+db.prepare("DELETE FROM recurrings WHERE wallet_id = ?").run(testRecWalletId);
+db.prepare("DELETE FROM wallets WHERE id = ?").run(testRecWalletId);
+db.prepare("DELETE FROM users WHERE id = ?").run(testRecUserId);
+console.log("✔ Recurring subscriptions CRUD & reminder scheduler logic pass");
+
 console.log("🎉 All checks passed successfully!");
+

@@ -43,7 +43,7 @@ export interface MonthlyRecap {
   totalIncome: number;
   totalExpense: number;
   netBalance: number;
-  topCategories: Array<{ category: string; total: number }>;
+  topCategories: Array<{ category: string; total: number; percentage: number }>;
 }
 
 export function getOrCreateUserAndWallet(telegramUserId: string, name?: string): UserWallet {
@@ -320,7 +320,7 @@ export function getMonthlyRecap(walletId: number, yearMonth: string): MonthlyRec
       AND COALESCE(occurred_at, substr(created_at, 1, 10)) LIKE ? || '%'
     GROUP BY category
     ORDER BY total DESC
-    LIMIT 3
+    LIMIT 5
   `);
 
   const topCategories = (
@@ -328,10 +328,15 @@ export function getMonthlyRecap(walletId: number, yearMonth: string): MonthlyRec
       category: string;
       total: number;
     }>
-  ).map((row) => ({
-    category: row.category || "Lain-lain",
-    total: Number(row.total),
-  }));
+  ).map((row) => {
+    const total = Number(row.total);
+    const percentage = totalExpense > 0 ? Math.round((total / totalExpense) * 100) : 0;
+    return {
+      category: row.category || "Lain-lain",
+      total,
+      percentage,
+    };
+  });
 
   return {
     yearMonth,
@@ -396,3 +401,239 @@ export function formatTransactionsCsv(transactions: TransactionRecord[]): string
   });
   return [header, ...rows].join("\n");
 }
+
+export interface BudgetRecord {
+  id: number;
+  wallet_id: number;
+  category: string;
+  amount_limit: number;
+  month_year: string;
+  created_at: string;
+}
+
+export interface BudgetReportItem {
+  id: number;
+  wallet_id: number;
+  category: string;
+  amount_limit: number;
+  month_year: string;
+  total_spent: number;
+}
+
+export function setBudget(
+  walletId: number,
+  category: string,
+  amountLimit: number,
+  monthYear: string
+): BudgetRecord {
+  const cleanCategory = category.trim();
+  const query = db.prepare(`
+    INSERT INTO budgets (wallet_id, category, amount_limit, month_year)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(wallet_id, category, month_year)
+    DO UPDATE SET amount_limit = excluded.amount_limit
+  `);
+  query.run(walletId, cleanCategory, amountLimit, monthYear);
+
+  const getQuery = db.prepare(`
+    SELECT * FROM budgets
+    WHERE wallet_id = ? AND category = ? AND month_year = ?
+  `);
+  return getQuery.get(walletId, cleanCategory, monthYear) as BudgetRecord;
+}
+
+export function getBudgetReport(walletId: number, monthYear: string): BudgetReportItem[] {
+  const budgetsQuery = db.prepare(`
+    SELECT * FROM budgets
+    WHERE wallet_id = ? AND month_year = ?
+    ORDER BY category ASC
+  `);
+  const budgets = budgetsQuery.all(walletId, monthYear) as BudgetRecord[];
+
+  return budgets.map((b) => {
+    const spentQuery = db.prepare(`
+      SELECT COALESCE(SUM(amount), 0) AS total_spent
+      FROM transactions
+      WHERE wallet_id = ? AND status = 'confirmed' AND type = 'expense'
+        AND (LOWER(category) = LOWER(?) OR LOWER(category) LIKE '%' || LOWER(?) || '%')
+        AND COALESCE(occurred_at, substr(created_at, 1, 10)) LIKE ? || '%'
+    `);
+    const row = spentQuery.get(walletId, b.category, b.category, monthYear) as { total_spent: number };
+    return {
+      ...b,
+      total_spent: Number(row ? row.total_spent : 0),
+    };
+  });
+}
+
+export function checkBudgetWarning(
+  walletId: number,
+  category: string | null | undefined,
+  newExpenseAmount: number,
+  monthYear: string
+): { isOverbudget: boolean; category?: string; limit?: number; totalAfter?: number } {
+  if (!category) return { isOverbudget: false };
+
+  const cleanCategory = category.trim();
+  const budgetQuery = db.prepare(`
+    SELECT * FROM budgets
+    WHERE wallet_id = ? AND month_year = ?
+      AND (LOWER(category) = LOWER(?) OR LOWER(?) LIKE '%' || LOWER(category) || '%' OR LOWER(category) LIKE '%' || LOWER(?) || '%')
+    ORDER BY CASE WHEN LOWER(category) = LOWER(?) THEN 0 ELSE 1 END
+    LIMIT 1
+  `);
+  const budget = budgetQuery.get(
+    walletId,
+    monthYear,
+    cleanCategory,
+    cleanCategory,
+    cleanCategory,
+    cleanCategory
+  ) as BudgetRecord | undefined;
+
+  if (!budget) {
+    return { isOverbudget: false };
+  }
+
+  const spentQuery = db.prepare(`
+    SELECT COALESCE(SUM(amount), 0) AS total_spent
+    FROM transactions
+    WHERE wallet_id = ? AND status = 'confirmed' AND type = 'expense'
+      AND (LOWER(category) = LOWER(?) OR LOWER(category) LIKE '%' || LOWER(?) || '%')
+      AND COALESCE(occurred_at, substr(created_at, 1, 10)) LIKE ? || '%'
+  `);
+  const row = spentQuery.get(walletId, budget.category, budget.category, monthYear) as { total_spent: number };
+  const currentSpent = Number(row ? row.total_spent : 0);
+  const totalAfter = currentSpent + newExpenseAmount;
+
+  if (totalAfter > budget.amount_limit) {
+    return {
+      isOverbudget: true,
+      category: budget.category,
+      limit: budget.amount_limit,
+      totalAfter,
+    };
+  }
+
+  return { isOverbudget: false };
+}
+
+export interface RecurringRecord {
+  id: number;
+  wallet_id: number;
+  name: string;
+  amount: number;
+  category: string | null;
+  type: "income" | "expense";
+  due_day: number;
+  is_active: number;
+  last_reminded_date: string | null;
+  created_at: string;
+}
+
+export interface DueRecurringItem extends RecurringRecord {
+  telegram_user_id: string;
+  wallet_name: string;
+}
+
+export function getUserRecurrings(walletId: number): RecurringRecord[] {
+  const query = db.prepare(`
+    SELECT * FROM recurrings
+    WHERE wallet_id = ? AND is_active = 1
+    ORDER BY due_day ASC, id ASC
+  `);
+  return query.all(walletId) as RecurringRecord[];
+}
+
+export function getRecurringById(id: number): RecurringRecord | undefined {
+  const query = db.prepare("SELECT * FROM recurrings WHERE id = ?");
+  return query.get(id) as RecurringRecord | undefined;
+}
+
+export function findActiveRecurringByName(walletId: number, name: string): RecurringRecord | undefined {
+  const cleanName = name.trim();
+  const query = db.prepare(`
+    SELECT * FROM recurrings
+    WHERE wallet_id = ? AND is_active = 1
+      AND (LOWER(name) = LOWER(?) OR LOWER(name) LIKE '%' || LOWER(?) || '%')
+    ORDER BY CASE WHEN LOWER(name) = LOWER(?) THEN 0 ELSE 1 END
+    LIMIT 1
+  `);
+  return query.get(walletId, cleanName, cleanName, cleanName) as RecurringRecord | undefined;
+}
+
+export function createRecurring(
+  walletId: number,
+  name: string,
+  amount: number,
+  type: "income" | "expense",
+  category: string,
+  dueDay: number
+): RecurringRecord {
+  const insert = db.prepare(`
+    INSERT INTO recurrings (wallet_id, name, amount, category, type, due_day, is_active)
+    VALUES (?, ?, ?, ?, ?, ?, 1)
+  `);
+  const info = insert.run(walletId, name.trim(), amount, category.trim(), type, dueDay);
+  return getRecurringById(Number(info.lastInsertRowid))!;
+}
+
+export function deactivateRecurring(id: number, walletId: number): boolean {
+  const update = db.prepare(`
+    UPDATE recurrings
+    SET is_active = 0
+    WHERE id = ? AND wallet_id = ? AND is_active = 1
+  `);
+  const result = update.run(id, walletId);
+  return result.changes > 0;
+}
+
+export function getDueRecurrings(dueDay: number, todayStr: string): DueRecurringItem[] {
+  const query = db.prepare(`
+    SELECT r.*, u.telegram_user_id, w.name as wallet_name
+    FROM recurrings r
+    JOIN wallets w ON r.wallet_id = w.id
+    JOIN users u ON w.user_id = u.id
+    WHERE r.is_active = 1
+      AND r.due_day = ?
+      AND (r.last_reminded_date IS NULL OR r.last_reminded_date != ?)
+    ORDER BY r.id ASC
+  `);
+  return query.all(dueDay, todayStr) as DueRecurringItem[];
+}
+
+export function markRecurringReminded(id: number, todayStr: string): void {
+  const update = db.prepare("UPDATE recurrings SET last_reminded_date = ? WHERE id = ?");
+  update.run(todayStr, id);
+}
+
+export function recordTransactionFromRecurring(
+  recurring: RecurringRecord,
+  occurredAt: string
+): number {
+  const insert = db.prepare(`
+    INSERT INTO transactions (
+      wallet_id,
+      type,
+      amount,
+      merchant,
+      category,
+      note,
+      occurred_at,
+      status,
+      source
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'confirmed', 'recurring')
+  `);
+  const note = `Tagihan rutin: ${recurring.name}`;
+  const info = insert.run(
+    recurring.wallet_id,
+    recurring.type,
+    recurring.amount,
+    recurring.name,
+    recurring.category || (recurring.type === "expense" ? "Langganan" : "Pendapatan"),
+    note,
+    occurredAt
+  );
+  return Number(info.lastInsertRowid);
+}
+
