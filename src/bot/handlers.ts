@@ -1,7 +1,8 @@
-import type { Context } from "grammy";
+import { InputFile, type Context } from "grammy";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import db, { initDb, dbPath, dataDir } from "../db/index.js";
 import { formatRupiah, parseRupToInt } from "../utils/money.js";
 import { logger } from "../utils/logger.js";
 import {
@@ -68,6 +69,8 @@ export async function handleStart(ctx: Context) {
     `• /riwayat - Lihat 5 transaksi terakhir\n` +
     `• /edit <id> <jumlah> <keterangan> - Edit transaksi\n` +
     `• /hapus <id> - Hapus transaksi\n` +
+    `• /backup - Unduh file backup database .db\n` +
+    `• /restore - Pulihkan database dari file .db\n` +
     `• /help - Panduan lengkap`;
 
   await ctx.reply(welcomeText, { parse_mode: "Markdown" });
@@ -410,9 +413,133 @@ export async function handleHelp(ctx: Context) {
     `• /riwayat - Melihat daftar riwayat 5 transaksi terakhir\n` +
     `• /edit <id> <jumlah> <keterangan> - Edit transaksi (contoh: /edit 12 75000 makan malam)\n` +
     `• /hapus <id> - Hapus transaksi berdasarkan ID (contoh: /hapus 12)\n` +
+    `• /backup - Unduh file backup database .db\n` +
+    `• /restore - Pulihkan database dari file backup .db\n` +
     `• /help - Menampilkan pesan panduan ini`;
 
   await ctx.reply(helpText, { parse_mode: "Markdown" });
+}
+
+export async function handleBackup(ctx: Context) {
+  try {
+    // Checkpoint SQLite WAL so bot.db has all latest transactions
+    db.pragma("wal_checkpoint(TRUNCATE)");
+
+    const buffer = await fs.promises.readFile(dbPath);
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const fileName = `telfin_backup_${dateStr}.db`;
+
+    await ctx.replyWithDocument(new InputFile(buffer, fileName), {
+      caption: "✅ Backup database berhasil dikirim. Simpan file ini di tempat aman.",
+    });
+  } catch (err: any) {
+    logger.error("Gagal melakukan backup database:", err);
+    await ctx.reply("❌ Gagal membuat backup database.");
+  }
+}
+
+export async function handleRestore(ctx: Context) {
+  const replyTo = ctx.message?.reply_to_message;
+  const doc = replyTo?.document;
+
+  if (doc) {
+    return processRestoreDocument(ctx, doc);
+  }
+
+  await ctx.reply("⚠️ Silakan balas pesan ini dengan mengunggah file backup .db Anda.", {
+    reply_markup: { force_reply: true },
+  });
+}
+
+export async function handleDocument(ctx: Context) {
+  const message = ctx.message;
+  const doc = message?.document;
+  if (!doc) return;
+
+  const replyTo = message.reply_to_message;
+  const isReplyToRestorePrompt = replyTo?.text?.includes("Silakan balas pesan ini dengan mengunggah file backup .db Anda");
+  const hasRestoreCaption = message.caption?.trim() === "/restore";
+
+  if (!isReplyToRestorePrompt && !hasRestoreCaption) {
+    return;
+  }
+
+  return processRestoreDocument(ctx, doc);
+}
+
+async function processRestoreDocument(ctx: Context, doc: any) {
+  const fileName = (doc.file_name || "").toLowerCase();
+  const mimeType = (doc.mime_type || "").toLowerCase();
+  const isDb = fileName.endsWith(".db") || mimeType === "application/x-sqlite3" || mimeType === "application/vnd.sqlite3";
+
+  if (!isDb) {
+    await ctx.reply("❌ File tidak valid. Harap unggah file backup dengan ekstensi `.db`.", {
+      parse_mode: "Markdown",
+    });
+    return;
+  }
+
+  const statusMsg = await ctx.reply("⏳ _Memproses pemulihan database..._", {
+    parse_mode: "Markdown",
+  });
+
+  try {
+    const file = await ctx.getFile();
+    if (!file.file_path) {
+      throw new Error("File path dari Telegram tidak tersedia.");
+    }
+
+    const botToken = process.env.BOT_TOKEN;
+    const downloadUrl = `https://api.telegram.org/file/bot${botToken}/${file.file_path}`;
+    const res = await fetch(downloadUrl);
+    if (!res.ok) {
+      throw new Error(`Gagal mengunduh file (${res.status})`);
+    }
+
+    const buffer = Buffer.from(await res.arrayBuffer());
+
+    // Validate SQLite magic header: must begin with "SQLite format 3"
+    if (buffer.length < 16 || buffer.subarray(0, 15).toString() !== "SQLite format 3") {
+      await ctx.api.editMessageText(
+        ctx.chat!.id,
+        statusMsg.message_id,
+        "❌ File bukan database SQLite yang valid."
+      );
+      return;
+    }
+
+    // 1. Close current DB connection
+    db.close();
+
+    // 2. Overwrite data/bot.db asynchronously
+    await fs.promises.writeFile(dbPath, buffer);
+
+    // 3. Remove stale WAL and SHM files if any
+    const walPath = path.join(dataDir, "bot.db-wal");
+    const shmPath = path.join(dataDir, "bot.db-shm");
+    if (fs.existsSync(walPath)) await fs.promises.unlink(walPath).catch(() => {});
+    if (fs.existsSync(shmPath)) await fs.promises.unlink(shmPath).catch(() => {});
+
+    // 4. Reopen and re-initialize SQLite
+    initDb();
+
+    await ctx.api.editMessageText(
+      ctx.chat!.id,
+      statusMsg.message_id,
+      "✅ Database berhasil dipulihkan. Bot telah di-reload."
+    );
+  } catch (err: any) {
+    logger.error("Gagal memulihkan database:", err);
+    try {
+      initDb();
+    } catch (_) {}
+
+    await ctx.api.editMessageText(
+      ctx.chat!.id,
+      statusMsg.message_id,
+      "❌ Terjadi kesalahan saat memulihkan database. Silakan coba lagi."
+    );
+  }
 }
 
 export async function handlePhoto(ctx: Context) {

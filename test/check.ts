@@ -8,6 +8,7 @@ import { logger } from "../src/utils/logger.js";
 import { cleanupPendingUploads } from "../src/services/receipt.service.js";
 import { formatTransactionDetail } from "../src/bot/handlers.js";
 import { getAllowedUserIds, BOT_COMMANDS } from "../src/bot/index.js";
+import db, { initDb, dbPath } from "../src/db/index.js";
 
 console.log("▶ Running Telfin logic checks...");
 
@@ -81,12 +82,14 @@ assert.ok(detailFormatted.includes("Snack & Minum"), "Must include note");
 console.log("✔ Rich transaction detail formatting passes");
 
 // 2d. Check BOT_COMMANDS and whitelist access control parsing
-assert.ok(BOT_COMMANDS.length >= 8, "Must register at least 8 commands in menu");
+assert.ok(BOT_COMMANDS.length >= 10, "Must register at least 10 commands in menu");
 assert.ok(BOT_COMMANDS.some((c) => c.command === "riwayat"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "saldo"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "rekap"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "edit"));
 assert.ok(BOT_COMMANDS.some((c) => c.command === "hapus"));
+assert.ok(BOT_COMMANDS.some((c) => c.command === "backup"));
+assert.ok(BOT_COMMANDS.some((c) => c.command === "restore"));
 
 const origAllowed = process.env.ALLOWED_USER_IDS;
 process.env.ALLOWED_USER_IDS = '["12345", "67890"]';
@@ -103,6 +106,22 @@ assert.deepEqual(getAllowedUserIds(), []);
 
 process.env.ALLOWED_USER_IDS = origAllowed;
 console.log("✔ Command menu & user whitelist parsing passes");
+
+// 2e. Check Backup & Restore File & Proxy Hot-Reload
+const backupBuf = fs.readFileSync(dbPath);
+assert.ok(backupBuf.length >= 16, "Backup buffer must not be empty");
+assert.equal(backupBuf.subarray(0, 15).toString(), "SQLite format 3", "Backup file must be valid SQLite format 3");
+
+const invalidBuf = Buffer.from("this is definitely not a sqlite database");
+const isValidSqlite = invalidBuf.length >= 16 && invalidBuf.subarray(0, 15).toString() === "SQLite format 3";
+assert.equal(isValidSqlite, false, "Must detect invalid SQLite file");
+
+// Test reload of DB proxy with initDb()
+const prevUserCount = (db.prepare("SELECT COUNT(*) as count FROM users").get() as any).count;
+initDb();
+const postUserCount = (db.prepare("SELECT COUNT(*) as count FROM users").get() as any).count;
+assert.equal(prevUserCount, postUserCount, "Database proxy must work after initDb reload");
+console.log("✔ Backup read, SQLite validation & DB proxy hot-reload passes");
 
 // 3. Check DB Flow (isolated test DB)
 const testDbDir = path.join(process.cwd(), "data");

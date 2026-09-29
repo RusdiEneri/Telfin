@@ -8,6 +8,9 @@ import {
   handleIncome,
   handleHapus,
   handleEdit,
+  handleBackup,
+  handleRestore,
+  handleDocument,
   handleRekap,
   handlePhoto,
   handleCallbackQuery,
@@ -22,6 +25,8 @@ export const BOT_COMMANDS = [
   { command: "income", description: "Catat pemasukan (<jumlah> <ket>)" },
   { command: "edit", description: "Edit transaksi (<id> <nominal> <ket>)" },
   { command: "hapus", description: "Hapus transaksi (<id>)" },
+  { command: "backup", description: "Unduh file backup database .db" },
+  { command: "restore", description: "Pulihkan database dari file .db" },
   { command: "help", description: "Panduan lengkap penggunaan bot" },
 ];
 
@@ -80,8 +85,11 @@ export function createBot(token: string): Bot {
   bot.command("income", handleIncome);
   bot.command("hapus", handleHapus);
   bot.command("edit", handleEdit);
+  bot.command("backup", handleBackup);
+  bot.command("restore", handleRestore);
 
   bot.on(":photo", handlePhoto);
+  bot.on("message:document", handleDocument);
   bot.on("callback_query:data", handleCallbackQuery);
   bot.on("message:text", handleTextMessage);
 
