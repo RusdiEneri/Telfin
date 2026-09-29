@@ -1,0 +1,8 @@
+node_modules
+dist
+.env
+data/*
+!data/.gitkeep
+uploads/*
+!uploads/.gitkeep
+.agents
