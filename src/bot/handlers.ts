@@ -1,6 +1,7 @@
 import type { Context } from "grammy";
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { formatRupiah, parseRupToInt } from "../utils/money.js";
 import { logger } from "../utils/logger.js";
 import {
@@ -12,9 +13,26 @@ import {
   getTransactionById,
   getWalletBalance,
   getRecentTransactions,
+  findConfirmedTransactionByHash,
+  getMonthlyRecap,
 } from "../services/transaction.service.js";
 import { saveUploadedBuffer, processReceiptFile } from "../services/receipt.service.js";
 import { createTransactionConfirmationKeyboard } from "./keyboards.js";
+
+const MONTH_NAMES = [
+  "Januari",
+  "Februari",
+  "Maret",
+  "April",
+  "Mei",
+  "Juni",
+  "Juli",
+  "Agustus",
+  "September",
+  "Oktober",
+  "November",
+  "Desember",
+];
 
 function getTelegramUser(ctx: Context) {
   const from = ctx.from;
@@ -39,6 +57,7 @@ export async function handleStart(ctx: Context) {
     `⚙️ *Perintah yang Tersedia*:\n` +
     `• /expense <jumlah> <keterangan> - Catat pengeluaran manual\n` +
     `• /income <jumlah> <keterangan> - Catat pemasukan manual\n` +
+    `• /rekap [MM-YYYY] - Ringkasan bulanan & kategori terbesar\n` +
     `• /saldo - Cek saldo dompet & ringkasan\n` +
     `• /riwayat - Lihat 5 transaksi terakhir\n` +
     `• /help - Panduan lengkap`;
@@ -122,6 +141,67 @@ export async function handleIncome(ctx: Context) {
   await ctx.reply(replyText, { parse_mode: "Markdown" });
 }
 
+export async function handleRekap(ctx: Context) {
+  const user = getTelegramUser(ctx);
+  const { walletId } = getOrCreateUserAndWallet(user.id, user.name);
+
+  const match = (ctx.match as string | undefined)?.trim();
+  let year: number;
+  let month: number;
+
+  if (!match) {
+    const now = new Date();
+    year = now.getFullYear();
+    month = now.getMonth() + 1;
+  } else {
+    // Support MM-YYYY or YYYY-MM
+    const m1 = match.match(/^(\d{1,2})-(\d{4})$/);
+    const m2 = match.match(/^(\d{4})-(\d{1,2})$/);
+    if (m1) {
+      month = parseInt(m1[1], 10);
+      year = parseInt(m1[2], 10);
+    } else if (m2) {
+      year = parseInt(m2[1], 10);
+      month = parseInt(m2[2], 10);
+    } else {
+      await ctx.reply(
+        "❌ Format bulan salah.\n\nContoh penggunaan:\n• `/rekap` (bulan ini)\n• `/rekap 09-2026` (bulan tertentu)",
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+
+    if (month < 1 || month > 12) {
+      await ctx.reply("❌ Bulan tidak valid (harus 01 sampai 12).");
+      return;
+    }
+  }
+
+  const yearMonth = `${year}-${String(month).padStart(2, "0")}`;
+  const monthName = MONTH_NAMES[month - 1];
+  const recap = getMonthlyRecap(walletId, yearMonth);
+
+  const sign = recap.netBalance >= 0 ? "+" : "-";
+  const netFormatted = `${sign}${formatRupiah(Math.abs(recap.netBalance))}`;
+
+  let text =
+    `📊 *Rekap Keuangan - ${monthName} ${year}*\n\n` +
+    `💰 *Total Pemasukan*: ${formatRupiah(recap.totalIncome)}\n` +
+    `💸 *Total Pengeluaran*: ${formatRupiah(recap.totalExpense)}\n` +
+    `📈 *Selisih (Net)*: *${netFormatted}*\n\n` +
+    `🏆 *3 Kategori Pengeluaran Terbesar*:\n`;
+
+  if (recap.topCategories.length === 0) {
+    text += `_(Belum ada catatan pengeluaran di bulan ini)_\n`;
+  } else {
+    recap.topCategories.forEach((cat, idx) => {
+      text += `${idx + 1}. *${cat.category}*: ${formatRupiah(cat.total)}\n`;
+    });
+  }
+
+  await ctx.reply(text.trim(), { parse_mode: "Markdown" });
+}
+
 export async function handleSaldo(ctx: Context) {
   const user = getTelegramUser(ctx);
   const { walletId } = getOrCreateUserAndWallet(user.id, user.name);
@@ -171,7 +251,8 @@ export async function handleHelp(ctx: Context) {
     `*Daftar Perintah*:\n` +
     `• /expense <jumlah> <keterangan> - Catat pengeluaran manual (contoh: /expense 50000 makan siang)\n` +
     `• /income <jumlah> <keterangan> - Catat pemasukan manual (contoh: /income 1500000 gaji)\n` +
-    `• /saldo - Menampilkan sisa saldo dan ringkasan\n` +
+    `• /rekap [MM-YYYY] - Ringkasan keuangan bulanan & top kategori (contoh: /rekap 09-2026)\n` +
+    `• /saldo - Menampilkan sisa saldo dan ringkasan dompet\n` +
     `• /riwayat - Melihat daftar riwayat 5 transaksi terakhir\n` +
     `• /help - Menampilkan pesan panduan ini`;
 
@@ -208,6 +289,20 @@ export async function handlePhoto(ctx: Context) {
     }
 
     const buffer = Buffer.from(await res.arrayBuffer());
+
+    // 1. Anti-Double Input: check SHA-256 hash before running AI
+    const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
+    const existingConfirmed = findConfirmedTransactionByHash(walletId, fileHash);
+
+    if (existingConfirmed) {
+      await ctx.api.editMessageText(
+        ctx.chat!.id,
+        statusMsg.message_id,
+        "⚠️ Nota ini sudah pernah dicatat sebelumnya. Transaksi dibatalkan."
+      );
+      return;
+    }
+
     const ext = path.extname(file.file_path) || ".jpg";
     localPath = saveUploadedBuffer(buffer, ext);
 
@@ -218,8 +313,8 @@ export async function handlePhoto(ctx: Context) {
       throw new Error("Total pada nota tidak terdeteksi atau tidak valid.");
     }
 
-    // Save as pending transaction
-    const txId = createPendingTransaction(walletId, extraction, localPath);
+    // Save as pending transaction with fileHash recorded
+    const txId = createPendingTransaction(walletId, extraction, localPath, fileHash);
 
     const typeLabel = extraction.type === "income" ? "🟢 Pemasukan" : "🔴 Pengeluaran";
     const previewText =

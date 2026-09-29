@@ -27,4 +27,11 @@ if (schemaPath) {
   db.exec(schema);
 }
 
+// Auto-migrate: ensure file_hash column exists
+const columns = db.pragma("table_info(transactions)") as Array<{ name: string }>;
+if (columns.length > 0 && !columns.some((col) => col.name === "file_hash")) {
+  db.exec("ALTER TABLE transactions ADD COLUMN file_hash TEXT;");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_transactions_file_hash ON transactions(file_hash);");
+}
+
 export default db;

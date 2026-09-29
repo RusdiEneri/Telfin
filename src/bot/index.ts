@@ -6,6 +6,7 @@ import {
   handleHelp,
   handleExpense,
   handleIncome,
+  handleRekap,
   handlePhoto,
   handleCallbackQuery,
 } from "./handlers.js";
@@ -16,6 +17,7 @@ export function createBot(token: string): Bot {
   bot.command("start", handleStart);
   bot.command("saldo", handleSaldo);
   bot.command("riwayat", handleRiwayat);
+  bot.command("rekap", handleRekap);
   bot.command("help", handleHelp);
   bot.command("expense", handleExpense);
   bot.command("income", handleIncome);
