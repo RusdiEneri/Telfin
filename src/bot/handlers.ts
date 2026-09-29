@@ -10,6 +10,8 @@ import {
   createManualTransaction,
   confirmTransaction,
   cancelTransaction,
+  softDeleteTransaction,
+  updateTransaction,
   getTransactionById,
   getWalletBalance,
   getRecentTransactions,
@@ -17,7 +19,11 @@ import {
   getMonthlyRecap,
 } from "../services/transaction.service.js";
 import { saveUploadedBuffer, processReceiptFile } from "../services/receipt.service.js";
-import { createTransactionConfirmationKeyboard } from "./keyboards.js";
+import {
+  createTransactionConfirmationKeyboard,
+  createTransactionActionKeyboard,
+  createDeleteConfirmationKeyboard,
+} from "./keyboards.js";
 
 const MONTH_NAMES = [
   "Januari",
@@ -60,6 +66,8 @@ export async function handleStart(ctx: Context) {
     `• /rekap [MM-YYYY] - Ringkasan bulanan & kategori terbesar\n` +
     `• /saldo - Cek saldo dompet & ringkasan\n` +
     `• /riwayat - Lihat 5 transaksi terakhir\n` +
+    `• /edit <id> <jumlah> <keterangan> - Edit transaksi\n` +
+    `• /hapus <id> - Hapus transaksi\n` +
     `• /help - Panduan lengkap`;
 
   await ctx.reply(welcomeText, { parse_mode: "Markdown" });
@@ -216,6 +224,33 @@ export async function handleSaldo(ctx: Context) {
   await ctx.reply(text, { parse_mode: "Markdown" });
 }
 
+export function formatTransactionDetail(tx: {
+  id: number;
+  type: "income" | "expense";
+  amount: number;
+  merchant?: string | null;
+  category?: string | null;
+  note?: string | null;
+  occurred_at?: string | null;
+  created_at: string;
+}): string {
+  const icon = tx.type === "income" ? "🟢" : "🔴";
+  const typeLabel = tx.type === "income" ? "Pemasukan" : "Pengeluaran";
+  const date = tx.occurred_at || tx.created_at.slice(0, 10);
+
+  const lines = [
+    `${icon} *Transaksi [#${tx.id}] • ${typeLabel}*`,
+    `💵 *Nominal*: *${formatRupiah(tx.amount)}*`,
+  ];
+
+  if (tx.merchant) lines.push(`🏪 *Merchant*: ${tx.merchant}`);
+  if (tx.category) lines.push(`📂 *Kategori*: ${tx.category}`);
+  lines.push(`📅 *Tanggal*: ${date}`);
+  if (tx.note) lines.push(`📝 *Keterangan*: ${tx.note}`);
+
+  return lines.join("\n");
+}
+
 export async function handleRiwayat(ctx: Context) {
   const user = getTelegramUser(ctx);
   const { walletId } = getOrCreateUserAndWallet(user.id, user.name);
@@ -226,19 +261,138 @@ export async function handleRiwayat(ctx: Context) {
     return;
   }
 
-  let text = `📜 *5 Transaksi Terakhir:*\n\n`;
-  for (const tx of transactions) {
-    const icon = tx.type === "income" ? "🟢" : "🔴";
-    const sign = tx.type === "income" ? "+" : "-";
-    const merchant = tx.merchant ? ` (${tx.merchant})` : "";
-    const category = tx.category ? ` [${tx.category}]` : "";
-    const date = tx.occurred_at || tx.created_at.slice(0, 10);
+  await ctx.reply("📜 *5 Transaksi Terakhir:*", { parse_mode: "Markdown" });
 
-    text += `${icon} *${sign}${formatRupiah(tx.amount)}*${merchant}${category}\n`;
-    text += `   📅 ${date}${tx.note ? ` • _${tx.note}_` : ""}\n\n`;
+  for (const tx of transactions) {
+    const text = formatTransactionDetail(tx);
+    await ctx.reply(text, {
+      parse_mode: "Markdown",
+      reply_markup: createTransactionActionKeyboard(tx.id),
+    });
+  }
+}
+
+export async function handleHapus(ctx: Context) {
+  const match = (ctx.match as string | undefined)?.trim();
+  const id = match ? parseInt(match.replace(/^#/, ""), 10) : NaN;
+
+  if (isNaN(id)) {
+    await ctx.reply(
+      "❌ Format salah.\n\nContoh penggunaan:\n`/hapus 12`",
+      { parse_mode: "Markdown" }
+    );
+    return;
   }
 
-  await ctx.reply(text.trim(), { parse_mode: "Markdown" });
+  const user = getTelegramUser(ctx);
+  const { walletId } = getOrCreateUserAndWallet(user.id, user.name);
+  const tx = getTransactionById(id);
+
+  if (!tx || tx.wallet_id !== walletId) {
+    await ctx.reply("❌ Transaksi tidak ditemukan atau bukan milik Anda.");
+    return;
+  }
+
+  if (tx.status === "deleted") {
+    await ctx.reply("⚠️ Transaksi ini sudah dihapus sebelumnya.");
+    return;
+  }
+
+  softDeleteTransaction(id, walletId);
+  await ctx.reply("Transaksi berhasil dihapus. Saldo telah diperbarui.");
+}
+
+export async function handleEdit(ctx: Context) {
+  const match = (ctx.match as string | undefined)?.trim();
+  if (!match) {
+    await ctx.reply(
+      "❌ Format salah.\n\nContoh penggunaan:\n`/edit 12 75000 makan malam di warteg`",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const parts = match.split(/\s+/);
+  if (parts.length < 3) {
+    await ctx.reply(
+      "❌ Format salah.\n\nContoh penggunaan:\n`/edit 12 75000 makan malam di warteg`",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const id = parseInt(parts[0].replace(/^#/, ""), 10);
+  const amount = parseRupToInt(parts[1]);
+  const note = parts.slice(2).join(" ").trim();
+
+  if (isNaN(id) || !amount || !note) {
+    await ctx.reply(
+      "❌ Format salah.\n\nContoh penggunaan:\n`/edit 12 75000 makan malam di warteg`",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const user = getTelegramUser(ctx);
+  const { walletId } = getOrCreateUserAndWallet(user.id, user.name);
+  const tx = getTransactionById(id);
+
+  if (!tx || tx.wallet_id !== walletId) {
+    await ctx.reply("❌ Transaksi tidak ditemukan atau bukan milik Anda.");
+    return;
+  }
+
+  if (tx.status !== "confirmed") {
+    await ctx.reply("❌ Hanya transaksi yang sudah dikonfirmasi yang dapat diedit.");
+    return;
+  }
+
+  updateTransaction(id, walletId, amount, note);
+  await ctx.reply("Transaksi berhasil diperbarui. Saldo telah diperbarui.");
+}
+
+export async function handleTextMessage(ctx: Context) {
+  const message = ctx.message;
+  const replyTo = message?.reply_to_message;
+  if (!message || !replyTo?.text) return;
+
+  if (!replyTo.text.includes("Silakan balas pesan ini dengan format: <nominal_baru> <keterangan_baru>")) {
+    return;
+  }
+
+  const match = replyTo.text.match(/#(\d+)/);
+  if (!match) return;
+  const txId = parseInt(match[1], 10);
+
+  const text = ctx.message.text?.trim() || "";
+  const parts = text.split(/\s+/);
+  const amount = parseRupToInt(parts[0]);
+  const note = parts.slice(1).join(" ").trim();
+
+  if (!amount || !note) {
+    await ctx.reply(
+      "❌ Format salah.\n\nSilakan balas dengan format: `<nominal_baru> <keterangan_baru>`\nContoh: `75000 makan malam di warteg`",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const user = getTelegramUser(ctx);
+  const { walletId } = getOrCreateUserAndWallet(user.id, user.name);
+  const tx = getTransactionById(txId);
+
+  if (!tx || tx.wallet_id !== walletId) {
+    await ctx.reply("❌ Transaksi tidak ditemukan atau bukan milik Anda.");
+    return;
+  }
+
+  if (tx.status !== "confirmed") {
+    await ctx.reply("❌ Hanya transaksi yang sudah dikonfirmasi yang dapat diedit.");
+    return;
+  }
+
+  updateTransaction(txId, walletId, amount, note);
+  await ctx.reply("Transaksi berhasil diperbarui. Saldo telah diperbarui.");
 }
 
 export async function handleHelp(ctx: Context) {
@@ -254,6 +408,8 @@ export async function handleHelp(ctx: Context) {
     `• /rekap [MM-YYYY] - Ringkasan keuangan bulanan & top kategori (contoh: /rekap 09-2026)\n` +
     `• /saldo - Menampilkan sisa saldo dan ringkasan dompet\n` +
     `• /riwayat - Melihat daftar riwayat 5 transaksi terakhir\n` +
+    `• /edit <id> <jumlah> <keterangan> - Edit transaksi (contoh: /edit 12 75000 makan malam)\n` +
+    `• /hapus <id> - Hapus transaksi berdasarkan ID (contoh: /hapus 12)\n` +
     `• /help - Menampilkan pesan panduan ini`;
 
   await ctx.reply(helpText, { parse_mode: "Markdown" });
@@ -345,8 +501,15 @@ export async function handlePhoto(ctx: Context) {
       }
     }
 
-    const errorMsg =
-      "Maaf, saya tidak bisa membaca total di nota ini. Pastikan foto tidak blur, tidak terpotong, dan terlihat jelas. Atau kamu bisa input manual dengan mengetik: /expense [jumlah] [keterangan]";
+    const isServerError =
+      error?.message?.includes("503") ||
+      error?.message?.includes("Gemini") ||
+      error?.message?.includes("OpenAI") ||
+      error?.message?.includes("fetch");
+
+    const errorMsg = isServerError
+      ? "Layanan AI sedang mengalami gangguan atau beban tinggi. Silakan coba kirim ulang beberapa saat lagi, atau catat manual dengan: /expense [jumlah] [keterangan]"
+      : "Maaf, saya tidak bisa membaca total di nota ini. Pastikan foto tidak blur, tidak terpotong, dan terlihat jelas. Atau kamu bisa input manual dengan mengetik: /expense [jumlah] [keterangan]";
 
     await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, errorMsg);
   }
@@ -356,6 +519,103 @@ export async function handleCallbackQuery(ctx: Context) {
   const data = ctx.callbackQuery?.data;
   if (!data) return;
 
+  const user = getTelegramUser(ctx);
+  const { walletId } = getOrCreateUserAndWallet(user.id, user.name);
+
+  // 1. Flow Hapus: delete_<id>
+  if (data.startsWith("delete_")) {
+    const txId = parseInt(data.slice("delete_".length), 10);
+    if (isNaN(txId)) {
+      await ctx.answerCallbackQuery({ text: "ID Transaksi tidak valid." });
+      return;
+    }
+
+    const tx = getTransactionById(txId);
+    if (!tx || tx.wallet_id !== walletId) {
+      await ctx.answerCallbackQuery({ text: "Transaksi tidak ditemukan atau bukan milik Anda." });
+      return;
+    }
+
+    const desc = tx.merchant || tx.note || "Transaksi";
+    const confirmText = `Yakin ingin menghapus transaksi ${desc} sebesar ${formatRupiah(tx.amount)}?`;
+    await ctx.editMessageText(confirmText, {
+      reply_markup: createDeleteConfirmationKeyboard(txId),
+    });
+    await ctx.answerCallbackQuery();
+    return;
+  }
+
+  // 2. Flow Konfirmasi Hapus: confirm_delete_<id>
+  if (data.startsWith("confirm_delete_")) {
+    const txId = parseInt(data.slice("confirm_delete_".length), 10);
+    if (isNaN(txId)) {
+      await ctx.answerCallbackQuery({ text: "ID Transaksi tidak valid." });
+      return;
+    }
+
+    const tx = getTransactionById(txId);
+    if (!tx || tx.wallet_id !== walletId) {
+      await ctx.answerCallbackQuery({ text: "Transaksi tidak ditemukan atau bukan milik Anda." });
+      return;
+    }
+
+    softDeleteTransaction(txId, walletId);
+    await ctx.editMessageText("Transaksi berhasil dihapus. Saldo telah diperbarui.");
+    await ctx.answerCallbackQuery({ text: "Transaksi berhasil dihapus." });
+    return;
+  }
+
+  // 3. Flow Batal Hapus: cancel_delete_<id>
+  if (data.startsWith("cancel_delete_")) {
+    const txId = parseInt(data.slice("cancel_delete_".length), 10);
+    if (isNaN(txId)) {
+      await ctx.answerCallbackQuery({ text: "ID Transaksi tidak valid." });
+      return;
+    }
+
+    const tx = getTransactionById(txId);
+    if (!tx || tx.wallet_id !== walletId) {
+      await ctx.answerCallbackQuery({ text: "Transaksi tidak ditemukan atau bukan milik Anda." });
+      return;
+    }
+
+    const text = formatTransactionDetail(tx);
+    await ctx.editMessageText(text, {
+      parse_mode: "Markdown",
+      reply_markup: createTransactionActionKeyboard(tx.id),
+    });
+    await ctx.answerCallbackQuery({ text: "Penghapusan dibatalkan." });
+    return;
+  }
+
+  // 4. Flow Edit: edit_<id>
+  if (data.startsWith("edit_")) {
+    const txId = parseInt(data.slice("edit_".length), 10);
+    if (isNaN(txId)) {
+      await ctx.answerCallbackQuery({ text: "ID Transaksi tidak valid." });
+      return;
+    }
+
+    const tx = getTransactionById(txId);
+    if (!tx || tx.wallet_id !== walletId) {
+      await ctx.answerCallbackQuery({ text: "Transaksi tidak ditemukan atau bukan milik Anda." });
+      return;
+    }
+
+    await ctx.reply(
+      `Silakan balas pesan ini dengan format: <nominal_baru> <keterangan_baru>. Contoh: 75000 makan malam di warteg\n\n(Edit transaksi #${txId})`,
+      {
+        reply_markup: {
+          force_reply: true,
+          selective: true,
+        },
+      }
+    );
+    await ctx.answerCallbackQuery();
+    return;
+  }
+
+  // 5. Flow Konfirmasi / Batalkan Nota: confirm:<id> / cancel:<id>
   const [action, idStr] = data.split(":");
   const transactionId = parseInt(idStr, 10);
 
@@ -364,8 +624,6 @@ export async function handleCallbackQuery(ctx: Context) {
     return;
   }
 
-  const user = getTelegramUser(ctx);
-  const { walletId } = getOrCreateUserAndWallet(user.id, user.name);
   const tx = getTransactionById(transactionId);
 
   if (!tx || tx.wallet_id !== walletId) {

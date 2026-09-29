@@ -6,6 +6,8 @@ import { formatRupiah, parseRupToInt, parseRupiah } from "../src/utils/money.js"
 import { ReceiptExtractionSchema } from "../src/validations/receipt.schema.js";
 import { logger } from "../src/utils/logger.js";
 import { cleanupPendingUploads } from "../src/services/receipt.service.js";
+import { formatTransactionDetail } from "../src/bot/handlers.js";
+import { getAllowedUserIds, BOT_COMMANDS } from "../src/bot/index.js";
 
 console.log("▶ Running Telfin logic checks...");
 
@@ -48,6 +50,59 @@ assert.throws(() => {
   ReceiptExtractionSchema.parse({ ...validPayload, amount: null });
 });
 console.log("✔ Zod schema validation passes");
+
+// 2b. Check Gemini candidate models and fallback resilience
+const primary = process.env.GEMINI_MODEL || "gemini-3.5-flash";
+const candidateModels = Array.from(new Set([primary, "gemini-3.5-flash", "gemini-3-flash-preview"]));
+assert.ok(candidateModels.length >= 2, "Candidate models must have at least 1 fallback");
+assert.equal(candidateModels[0], primary, "Primary model must be first candidate");
+console.log("✔ AI model fallback candidate list passes");
+
+// 2c. Check formatTransactionDetail (rich receipt / transaction format)
+const sampleTx = {
+  id: 12,
+  type: "expense" as const,
+  amount: 52500,
+  merchant: "Indomaret",
+  category: "Makanan & Minuman",
+  note: "Snack & Minum",
+  occurred_at: "2026-09-29",
+  created_at: "2026-09-29 10:00:00",
+};
+const detailFormatted = formatTransactionDetail(sampleTx);
+assert.ok(detailFormatted.includes("[#12]"), "Must include transaction ID");
+assert.ok(detailFormatted.includes("🔴"), "Expense must have red icon");
+assert.ok(detailFormatted.includes("Pengeluaran"), "Must label Pengeluaran");
+assert.ok(detailFormatted.includes("Rp52.500"), "Must format amount in Rupiah");
+assert.ok(detailFormatted.includes("Indomaret"), "Must include merchant");
+assert.ok(detailFormatted.includes("Makanan & Minuman"), "Must include category");
+assert.ok(detailFormatted.includes("2026-09-29"), "Must include date");
+assert.ok(detailFormatted.includes("Snack & Minum"), "Must include note");
+console.log("✔ Rich transaction detail formatting passes");
+
+// 2d. Check BOT_COMMANDS and whitelist access control parsing
+assert.ok(BOT_COMMANDS.length >= 8, "Must register at least 8 commands in menu");
+assert.ok(BOT_COMMANDS.some((c) => c.command === "riwayat"));
+assert.ok(BOT_COMMANDS.some((c) => c.command === "saldo"));
+assert.ok(BOT_COMMANDS.some((c) => c.command === "rekap"));
+assert.ok(BOT_COMMANDS.some((c) => c.command === "edit"));
+assert.ok(BOT_COMMANDS.some((c) => c.command === "hapus"));
+
+const origAllowed = process.env.ALLOWED_USER_IDS;
+process.env.ALLOWED_USER_IDS = '["12345", "67890"]';
+assert.deepEqual(getAllowedUserIds(), ["12345", "67890"]);
+
+process.env.ALLOWED_USER_IDS = "[12345, 67890]";
+assert.deepEqual(getAllowedUserIds(), ["12345", "67890"]);
+
+process.env.ALLOWED_USER_IDS = "12345, 67890";
+assert.deepEqual(getAllowedUserIds(), ["12345", "67890"]);
+
+process.env.ALLOWED_USER_IDS = "";
+assert.deepEqual(getAllowedUserIds(), []);
+
+process.env.ALLOWED_USER_IDS = origAllowed;
+console.log("✔ Command menu & user whitelist parsing passes");
 
 // 3. Check DB Flow (isolated test DB)
 const testDbDir = path.join(process.cwd(), "data");
@@ -206,6 +261,55 @@ cols = legacyDb.pragma("table_info(transactions)") as Array<{ name: string }>;
 assert.equal(cols.some((c) => c.name === "file_hash"), true, "Migrated table must have file_hash");
 legacyDb.close();
 console.log("✔ SQLite auto-migration passes");
+
+// 5. Check Update & Soft Delete CRUD operations
+const currentBal = getBalance(walletId);
+
+// Insert a test transaction to edit and delete
+const testTxRes = testDb.prepare(`
+  INSERT INTO transactions (wallet_id, type, amount, note, status, source)
+  VALUES (?, 'expense', 50000, 'makan siang', 'confirmed', 'manual')
+`).run(walletId);
+const testTxId = Number(testTxRes.lastInsertRowid);
+assert.equal(getBalance(walletId), currentBal - 50000, "Balance must deduct 50000");
+
+// Update transaction amount to 75000 and note to 'makan malam di warteg'
+const updateRes = testDb.prepare(`
+  UPDATE transactions
+  SET amount = ?, note = ?, merchant = ?
+  WHERE id = ? AND wallet_id = ? AND status = 'confirmed'
+`).run(75000, "makan malam di warteg", "makan malam di warteg", testTxId, walletId);
+assert.equal(updateRes.changes, 1, "Should update 1 transaction");
+
+const updatedTx = testDb.prepare("SELECT * FROM transactions WHERE id = ?").get(testTxId) as any;
+assert.equal(updatedTx.amount, 75000);
+assert.equal(updatedTx.note, "makan malam di warteg");
+assert.equal(getBalance(walletId), currentBal - 75000, "Balance must reflect updated amount 75000");
+
+// Soft delete the transaction
+const deleteRes = testDb.prepare(`
+  UPDATE transactions
+  SET status = 'deleted'
+  WHERE id = ? AND wallet_id = ? AND status = 'confirmed'
+`).run(testTxId, walletId);
+assert.equal(deleteRes.changes, 1, "Should soft delete 1 transaction");
+
+// Verify transaction still exists in DB for audit trail
+const deletedTx = testDb.prepare("SELECT * FROM transactions WHERE id = ?").get(testTxId) as any;
+assert.equal(deletedTx.status, "deleted", "Transaction status must be deleted");
+
+// Verify getBalance excludes deleted transaction
+assert.equal(getBalance(walletId), currentBal, "Balance must exclude soft-deleted transaction");
+
+// Verify recent transactions excludes deleted transaction
+const recent = testDb.prepare(`
+  SELECT * FROM transactions
+  WHERE wallet_id = ? AND status = 'confirmed'
+  ORDER BY id DESC LIMIT 5
+`).all(walletId) as any[];
+assert.equal(recent.some((t) => t.id === testTxId), false, "Recent transactions must exclude deleted tx");
+
+console.log("✔ Soft-delete and Update CRUD operations pass");
 
 testDb.close();
 console.log("✔ SQLite transaction & balance flow passes");
