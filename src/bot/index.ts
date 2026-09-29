@@ -27,6 +27,7 @@ import {
   handleTambahLangganan,
   handleHapusLangganan,
   handleInsight,
+  handlePing,
 } from "./handlers.js";
 
 export const BOT_COMMANDS = [
@@ -42,6 +43,8 @@ export const BOT_COMMANDS = [
   { command: "hapuslangganan", description: "Hapus tagihan rutin (<id>)" },
   { command: "rekap", description: "Ringkasan bulanan & kategori terbesar" },
   { command: "insight", description: "Analisa & saran keuangan bulanan dari AI" },
+  { command: "ping", description: "Cek latensi & status performa bot" },
+  { command: "botstatus", description: "Cek kesehatan & info lengkap server" },
   { command: "export", description: "Ekspor seluruh transaksi ke CSV" },
   { command: "import", description: "Impor data transaksi dari file CSV" },
   { command: "expense", description: "Catat pengeluaran (<jumlah> <ket>)" },
@@ -123,6 +126,9 @@ export function createBot(token: string): Bot {
   bot.command("edit", handleEdit);
   bot.command("backup", handleBackup);
   bot.command("restore", handleRestore);
+  bot.command("ping", handlePing);
+  bot.command("botstatus", handlePing);
+  bot.command("statusbot", handlePing);
 
   bot.on(":photo", handlePhoto);
   bot.on("message:document", handleDocument);

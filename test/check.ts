@@ -19,6 +19,10 @@ import {
   checkInsightRateLimit,
   recordInsightUsage,
   resetInsightRateLimit,
+  formatBytes,
+  formatUptime,
+  formatSystemStatus,
+  handlePing,
 } from "../src/bot/handlers.js";
 import { getAllowedUserIds, BOT_COMMANDS } from "../src/bot/index.js";
 import { createTransactionConfirmationKeyboard, createWalletSelectionKeyboard, createImportConfirmationKeyboard } from "../src/bot/keyboards.js";
@@ -780,9 +784,60 @@ assert.equal(checkInsightRateLimit(testUserId).allowed, true, "Request must be a
 
 // 10c. Verify bot commands include insight
 assert.ok(BOT_COMMANDS.some((c) => c.command === "insight"), "BOT_COMMANDS must include insight");
-
 console.log("✔ AI Financial Insight prompt summary, rate limiting & commands pass");
 
-console.log("🎉 All checks passed successfully!");
+// 11. Check System Status & Ping Metrics
+// 11a. Test formatBytes
+assert.equal(formatBytes(0), "0 B");
+assert.equal(formatBytes(-100), "0 B");
+assert.equal(formatBytes(1024), "1.00 KB");
+assert.equal(formatBytes(1048576), "1.00 MB");
+assert.equal(formatBytes(1073741824), "1.00 GB");
+
+// 11b. Test formatUptime
+assert.equal(formatUptime(0), "0 detik");
+assert.equal(formatUptime(-10), "0 detik");
+assert.equal(formatUptime(45), "45 detik");
+assert.equal(formatUptime(125), "2 menit 5 detik");
+assert.equal(formatUptime(3665), "1 jam 1 menit 5 detik");
+assert.equal(formatUptime(90065), "1 hari 1 jam 1 menit 5 detik");
+
+// 11c. Test formatSystemStatus output integrity
+const statusOutput = formatSystemStatus({ telegramLatencyMs: 150, execMs: 1.25 });
+assert.ok(statusOutput.includes("PONG! Status Bot & Server Telfin"));
+assert.ok(statusOutput.includes("Kecepatan Respon: 0.1500 _Second_ (150 ms)"));
+assert.ok(statusOutput.includes("Waktu Eksekusi: 1.25 _miliseconds_"));
+assert.ok(statusOutput.includes("Runtime Bot:"));
+assert.ok(statusOutput.includes("Info Server"));
+assert.ok(statusOutput.includes("Info RAM Server"));
+assert.ok(statusOutput.includes("NodeJS Memory Usage"));
+assert.ok(statusOutput.includes("Total CPU Usage"));
+assert.ok(statusOutput.includes("Status Database & Storage"));
+assert.ok(statusOutput.includes("SQLite DB:"));
+
+// 11d. Test handlePing execution with mock Telegram context
+let pingReply = "";
+const mockCtx = {
+  message: { date: Math.floor(Date.now() / 1000) - 1 },
+  reply: async (text: string) => {
+    pingReply = text;
+  },
+} as any;
+
+(async () => {
+  await handlePing(mockCtx);
+  assert.ok(pingReply.includes("PONG! Status Bot & Server Telfin"));
+  assert.ok(pingReply.includes("Kecepatan Respon"));
+
+  // 11e. Verify bot menu commands include ping and botstatus
+  assert.ok(BOT_COMMANDS.some((c) => c.command === "ping"));
+  assert.ok(BOT_COMMANDS.some((c) => c.command === "botstatus"));
+
+  console.log("✔ Ping, System Metrics & Hardware Status monitoring pass");
+  console.log("🎉 All checks passed successfully!");
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
 
 

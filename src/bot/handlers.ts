@@ -2,6 +2,8 @@ import { InputFile, type Context } from "grammy";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import os from "node:os";
+import { performance } from "node:perf_hooks";
 import db, { initDb, dbPath, dataDir } from "../db/index.js";
 import { formatRupiah, parseRupToInt, generateBarChart, getCategoryEmoji } from "../utils/money.js";
 import { formatDateTimeJakarta, getCurrentYearMonthJakarta, getTodayDateJakarta, getTodayDayJakarta } from "../utils/date.js";
@@ -556,8 +558,16 @@ export async function handleEdit(ctx: Context) {
 
 export async function handleTextMessage(ctx: Context) {
   const message = ctx.message;
-  const replyTo = message?.reply_to_message;
-  if (!message || !replyTo?.text) return;
+  if (!message) return;
+
+  const rawText = message.text?.trim().toLowerCase();
+  if (rawText === "ping" || rawText === "botstatus" || rawText === "statusbot") {
+    await handlePing(ctx);
+    return;
+  }
+
+  const replyTo = message.reply_to_message;
+  if (!replyTo?.text) return;
 
   // Case 1: Reply to Recurring Bill Reminder with "catat"
   if (replyTo.text.includes("PENGINGAT TAGIHAN")) {
@@ -709,7 +719,9 @@ export async function handleHelp(ctx: Context) {
     `• \`/setdefault <nama>\` — Ganti dompet utama\n` +
     `• \`/tambahdompet <nama>\` — Buat dompet baru (misal: Bank BCA)\n` +
     `• \`/backup\` — Unduh file cadangan database .db\n` +
-    `• \`/restore\` — Pulihkan database dari file .db`;
+    `• \`/restore\` — Pulihkan database dari file .db\n\n` +
+    `⚡ *7. Sistem & Pemantauan*\n` +
+    `• \`/ping\` atau \`/botstatus\` — Cek latensi respons, beban CPU, RAM & kesehatan database`;
 
   await ctx.reply(helpText, { parse_mode: "Markdown" });
 }
@@ -1854,4 +1866,190 @@ export async function handleHapusLangganan(ctx: Context) {
   deactivateRecurring(id, rec.wallet_id);
   await ctx.reply(`✅ Tagihan rutin *${rec.name}* (ID: #${rec.id}) berhasil dinonaktifkan.`, { parse_mode: "Markdown" });
 }
+
+/**
+ * Format bytes into human-readable representation (B, KB, MB, GB, TB).
+ */
+export function formatBytes(bytes: number): string {
+  if (bytes <= 0 || !Number.isFinite(bytes)) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  return `${(bytes / Math.pow(1024, i)).toFixed(2)} ${units[i]}`;
+}
+
+/**
+ * Format elapsed seconds into human-readable duration (hari, jam, menit, detik).
+ */
+export function formatUptime(seconds: number): string {
+  if (seconds <= 0 || !Number.isFinite(seconds)) return "0 detik";
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const parts: string[] = [];
+  if (d > 0) parts.push(`${d} hari`);
+  if (h > 0) parts.push(`${h} jam`);
+  if (m > 0) parts.push(`${m} menit`);
+  if (s > 0 || parts.length === 0) parts.push(`${s} detik`);
+  return parts.join(" ");
+}
+
+export interface SystemStatusOptions {
+  telegramLatencyMs?: number;
+  execMs?: number;
+}
+
+/**
+ * Generate formatted system health & hardware metrics report for Telegram bot.
+ */
+export function formatSystemStatus(options?: SystemStatusOptions): string {
+  const uptimeSeconds = process.uptime();
+  const serverUptimeSeconds = os.uptime();
+  const cpus = os.cpus() || [];
+
+  const cpuList = cpus.map((cpu) => {
+    const total = Object.keys(cpu.times).reduce((last, type) => last + (cpu.times as any)[type], 0);
+    return { ...cpu, total };
+  });
+
+  const cpuSummary = cpuList.reduce(
+    (last, cpu, _, { length }) => {
+      last.total += cpu.total;
+      last.speed += cpu.speed / (length || 1);
+      last.times.user += cpu.times.user;
+      last.times.nice += cpu.times.nice;
+      last.times.sys += cpu.times.sys;
+      last.times.idle += cpu.times.idle;
+      last.times.irq += cpu.times.irq;
+      return last;
+    },
+    {
+      speed: 0,
+      total: 0,
+      times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 },
+    }
+  );
+
+  const totalMem = os.totalmem();
+  const freeMem = os.freemem();
+  const usedMem = Math.max(0, totalMem - freeMem);
+  const ramPercent = totalMem > 0 ? Math.round((usedMem / totalMem) * 100) : 0;
+  const memBar = generateBarChart(ramPercent);
+
+  const nodeMem = process.memoryUsage();
+  const maxKeyLen = Math.max(...Object.keys(nodeMem).map((k) => k.length));
+  const nodeMemStr = Object.keys(nodeMem)
+    .map((k) => `${k.padEnd(maxKeyLen, " ")}: ${formatBytes((nodeMem as any)[k])}`)
+    .join("\n");
+
+  const totalCpuTicks = cpuSummary.total || 1;
+  const cpuSpeedMhz = Math.round(cpuSummary.speed);
+  const cpuModel = cpus[0]?.model.trim() || "Unknown CPU";
+
+  const totalCpuLines = Object.keys(cpuSummary.times)
+    .map((type) => `- *${(type + "*").padEnd(7)}: ${((100 * (cpuSummary.times as any)[type]) / totalCpuTicks).toFixed(2)}%`)
+    .join("\n");
+
+  // ponytail: limit per-core detailed breakdown to 4 cores to prevent exceeding Telegram's 4096-character limit on machines with many vCPUs. Upgrade path: summarize extra cores or send attachment.
+  const maxCoresToShow = 4;
+  const coresToShow = cpuList.slice(0, maxCoresToShow);
+  const coreBreakdownStr = coresToShow
+    .map((cpu, i) => {
+      const cTotal = cpu.total || 1;
+      const lines = Object.keys(cpu.times)
+        .map((type) => `- *${(type + "*").padEnd(7)}: ${((100 * (cpu.times as any)[type]) / cTotal).toFixed(2)}%`)
+        .join("\n");
+      return `${i + 1}. ${cpu.model.trim()} (${cpu.speed} MHz)\n${lines}`;
+    })
+    .join("\n\n");
+
+  const extraCoresStr =
+    cpuList.length > maxCoresToShow
+      ? `\n\n_(+ ${cpuList.length - maxCoresToShow} core lainnya disembunyikan agar tampilan ringkas)_`
+      : "";
+
+  let dbSizeStr = "0 B";
+  let dbStatus = "Sehat (Integrity: OK)";
+  let totalTx = 0;
+  let totalWallets = 0;
+  let totalUsers = 0;
+  let pendingUploadsCount = 0;
+
+  try {
+    if (fs.existsSync(dbPath)) {
+      dbSizeStr = formatBytes(fs.statSync(dbPath).size);
+    }
+    const integrity = db.prepare("PRAGMA quick_check").get() as { quick_check?: string } | undefined;
+    dbStatus = integrity?.quick_check === "ok" ? "Sehat (Integrity: OK)" : integrity?.quick_check || "OK";
+
+    totalTx = (db.prepare("SELECT COUNT(*) as c FROM transactions WHERE status != 'deleted'").get() as any)?.c || 0;
+    totalWallets = (db.prepare("SELECT COUNT(*) as c FROM wallets").get() as any)?.c || 0;
+    totalUsers = (db.prepare("SELECT COUNT(*) as c FROM users").get() as any)?.c || 0;
+
+    const uploadsDir = path.join(process.cwd(), "uploads");
+    if (fs.existsSync(uploadsDir)) {
+      pendingUploadsCount = fs.readdirSync(uploadsDir).length;
+    }
+  } catch (err) {
+    logger.error("Gagal memeriksa status database di formatSystemStatus:", err);
+    dbStatus = "Error membaca DB";
+  }
+
+  const latensiSec = options?.telegramLatencyMs !== undefined ? (options.telegramLatencyMs / 1000).toFixed(4) : "0.0000";
+  const latensiLine =
+    options?.telegramLatencyMs !== undefined
+      ? `• Kecepatan Respon: ${latensiSec} _Second_ (${options.telegramLatencyMs} ms)`
+      : `• Kecepatan Respon: 0.0000 _Second_ (<1 ms)`;
+  const execLine = options?.execMs !== undefined ? `• Waktu Eksekusi: ${options.execMs} _miliseconds_` : "";
+
+  return (
+    `🏓 *PONG! Status Bot & Server Telfin*\n\n` +
+    `⚡ *Kecepatan Respon & Runtime:*\n` +
+    `${latensiLine}\n` +
+    (execLine ? `${execLine}\n` : "") +
+    `• Runtime Bot: ${formatUptime(uptimeSeconds)}\n` +
+    `• Runtime Server: ${formatUptime(serverUptimeSeconds)}\n\n` +
+    `💻 *Info Server & Host*\n` +
+    `• OS: \`${os.type()} ${os.release()} (${os.arch()})\`\n` +
+    `• Platform: \`${os.platform()}\`\n` +
+    `• Hostname: \`${os.hostname()}\`\n` +
+    `• Node.js: \`${process.version}\` (V8: \`${process.versions.v8}\`)\n\n` +
+    `💾 *Info RAM Server*\n` +
+    `RAM: ${formatBytes(usedMem)} / ${formatBytes(totalMem)} (${ramPercent}%)\n` +
+    `${memBar}\n\n` +
+    `📦 *NodeJS Memory Usage*\n` +
+    `\`\`\`\n${nodeMemStr}\n\`\`\`\n\n` +
+    (cpus.length > 0
+      ? `⚙️ *Total CPU Usage*\n` +
+        `${cpuModel} (${cpuSpeedMhz} MHz)\n` +
+        `${totalCpuLines}\n\n` +
+        `🔬 *CPU Core(s) Usage (${cpus.length} Core CPU)*\n` +
+        `${coreBreakdownStr}` +
+        `${extraCoresStr}\n\n`
+      : "") +
+    `🗄️ *Status Database & Storage*\n` +
+    `• SQLite DB: ${dbStatus}\n` +
+    `• Ukuran File DB: ${dbSizeStr}\n` +
+    `• Data Aktif: ${totalTx} transaksi, ${totalWallets} dompet, ${totalUsers} pengguna\n` +
+    `• File Temp Uploads: ${pendingUploadsCount} file`
+  ).trim();
+}
+
+/**
+ * Handle /ping, /botstatus, and /statusbot commands.
+ */
+export async function handlePing(ctx: Context) {
+  const start = performance.now();
+  const msgDate = ctx.message?.date;
+  const telegramLatencyMs = msgDate ? Math.max(0, Date.now() - msgDate * 1000) : undefined;
+  const execMs = parseFloat((performance.now() - start).toFixed(2));
+
+  const statusText = formatSystemStatus({
+    telegramLatencyMs,
+    execMs,
+  });
+
+  await ctx.reply(statusText, { parse_mode: "Markdown" });
+}
+
 
