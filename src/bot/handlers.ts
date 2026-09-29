@@ -4,6 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import db, { initDb, dbPath, dataDir } from "../db/index.js";
 import { formatRupiah, parseRupToInt } from "../utils/money.js";
+import { formatDateTimeJakarta } from "../utils/date.js";
 import { logger } from "../utils/logger.js";
 import {
   getOrCreateUserAndWallet,
@@ -117,11 +118,14 @@ export async function handleExpense(ctx: Context) {
 
   createManualTransaction(walletId, "expense", amount, note);
   const { balance } = getWalletBalance(walletId);
+  const defaultWallet = getWalletById(walletId);
 
   const replyText =
     `✅ *Pengeluaran Berhasil Dicatat!*\n\n` +
     `🔴 *Nominal*: ${formatRupiah(amount)}\n` +
-    `📝 *Keterangan*: ${note}\n\n` +
+    `📝 *Keterangan*: ${note}\n` +
+    `📅 *Waktu*: ${formatDateTimeJakarta(new Date())}\n` +
+    `💳 *Dompet*: ${defaultWallet?.name || "Dompet Utama"}\n\n` +
     `💰 *Saldo Saat Ini*: *${formatRupiah(balance)}*`;
 
   await ctx.reply(replyText, { parse_mode: "Markdown" });
@@ -155,11 +159,14 @@ export async function handleIncome(ctx: Context) {
 
   createManualTransaction(walletId, "income", amount, note);
   const { balance } = getWalletBalance(walletId);
+  const defaultWallet = getWalletById(walletId);
 
   const replyText =
     `✅ *Pemasukan Berhasil Dicatat!*\n\n` +
     `🟢 *Nominal*: ${formatRupiah(amount)}\n` +
-    `📝 *Keterangan*: ${note}\n\n` +
+    `📝 *Keterangan*: ${note}\n` +
+    `📅 *Waktu*: ${formatDateTimeJakarta(new Date())}\n` +
+    `💳 *Dompet*: ${defaultWallet?.name || "Dompet Utama"}\n\n` +
     `💰 *Saldo Saat Ini*: *${formatRupiah(balance)}*`;
 
   await ctx.reply(replyText, { parse_mode: "Markdown" });
@@ -254,7 +261,7 @@ export function formatTransactionDetail(tx: {
 }): string {
   const icon = tx.type === "income" ? "🟢" : "🔴";
   const typeLabel = tx.type === "income" ? "Pemasukan" : "Pengeluaran";
-  const date = tx.occurred_at || tx.created_at.slice(0, 10);
+  const dateFormatted = formatDateTimeJakarta(tx.created_at || tx.occurred_at);
 
   const lines = [
     `${icon} *Transaksi [#${tx.id}] • ${typeLabel}*`,
@@ -263,7 +270,7 @@ export function formatTransactionDetail(tx: {
 
   if (tx.merchant) lines.push(`🏪 *Merchant*: ${tx.merchant}`);
   if (tx.category) lines.push(`📂 *Kategori*: ${tx.category}`);
-  lines.push(`📅 *Tanggal*: ${date}`);
+  lines.push(`📅 *Waktu*: ${dateFormatted}`);
   if (tx.note) lines.push(`📝 *Keterangan*: ${tx.note}`);
 
   return lines.join("\n");
@@ -544,9 +551,9 @@ export async function handleCari(ctx: Context) {
 
   let text = `🔍 *Hasil Pencarian: "${match}"*\n\n`;
   for (const tx of results) {
-    const date = tx.occurred_at || tx.created_at.slice(0, 10);
+    const timeStr = formatDateTimeJakarta(tx.created_at || tx.occurred_at);
     const merchant = tx.merchant || tx.note || "-";
-    text += `[#${tx.id}] ${date} | ${merchant} | ${formatRupiah(tx.amount)}\n`;
+    text += `[#${tx.id}] ${timeStr} | ${merchant} | ${formatRupiah(tx.amount)}\n`;
   }
 
   await ctx.reply(text.trim(), { parse_mode: "Markdown" });
@@ -711,13 +718,14 @@ export function formatReceiptPreview(
   walletName: string
 ): string {
   const typeLabel = tx.type === "income" ? "🟢 Pemasukan" : "🔴 Pengeluaran";
+  const timeStr = formatDateTimeJakarta(tx.occurred_at || new Date());
   return (
     `🧾 *Preview Transaksi Nota*\n\n` +
     `🏷️ *Tipe*: ${typeLabel}\n` +
     `💵 *Nominal*: *${formatRupiah(tx.amount)}*\n` +
     `🏪 *Merchant*: ${tx.merchant || "-"}\n` +
     `📂 *Kategori*: ${tx.category || "-"}\n` +
-    `📅 *Tanggal*: ${tx.occurred_at || "-"}\n` +
+    `📅 *Waktu*: ${timeStr}\n` +
     (tx.note ? `📝 *Catatan*: _${tx.note}_\n` : "") +
     `Akan dicatat ke: 💳 *${walletName}*\n\n` +
     `⚠️ *Status: Menunggu Konfirmasi*\n` +
@@ -1043,12 +1051,13 @@ export async function handleCallbackQuery(ctx: Context) {
     const targetWallet = getWalletById(tx.wallet_id);
 
     const typeIcon = tx.type === "income" ? "🟢" : "🔴";
+    const timeStr = formatDateTimeJakarta(tx.created_at || tx.occurred_at || new Date());
     const resultText =
       `✅ *Transaksi Berhasil Disimpan!*\n\n` +
       `${typeIcon} *Nominal*: ${formatRupiah(tx.amount)}\n` +
       `🏪 *Merchant*: ${tx.merchant || "-"}\n` +
       `📂 *Kategori*: ${tx.category || "-"}\n` +
-      `📅 *Tanggal*: ${tx.occurred_at || "-"}\n` +
+      `📅 *Waktu*: ${timeStr}\n` +
       `💳 *Dompet*: ${targetWallet?.name || "Dompet Utama"}\n\n` +
       `💰 *Saldo Dompet Saat Ini*: *${formatRupiah(balance)}*`;
 

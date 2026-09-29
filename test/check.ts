@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { formatRupiah, parseRupToInt, parseRupiah } from "../src/utils/money.js";
+import { formatDateTimeJakarta } from "../src/utils/date.js";
 import { ReceiptExtractionSchema } from "../src/validations/receipt.schema.js";
 import { logger } from "../src/utils/logger.js";
 import { cleanupPendingUploads } from "../src/services/receipt.service.js";
@@ -79,9 +80,19 @@ assert.ok(detailFormatted.includes("Pengeluaran"), "Must label Pengeluaran");
 assert.ok(detailFormatted.includes("Rp52.500"), "Must format amount in Rupiah");
 assert.ok(detailFormatted.includes("Indomaret"), "Must include merchant");
 assert.ok(detailFormatted.includes("Makanan & Minuman"), "Must include category");
-assert.ok(detailFormatted.includes("2026-09-29"), "Must include date");
+assert.ok(detailFormatted.includes("29 September 2026"), "Must include Indonesian date");
+assert.ok(detailFormatted.includes("Selasa"), "Must include day of week");
+assert.ok(detailFormatted.includes("WIB"), "Must include Asia/Jakarta WIB timezone");
 assert.ok(detailFormatted.includes("Snack & Minum"), "Must include note");
 console.log("✔ Rich transaction detail formatting passes");
+
+// 2c1. Check formatDateTimeJakarta (Indonesian weekday, date, 24h time, Asia/Jakarta WIB)
+const formattedUtc = formatDateTimeJakarta("2026-09-29 13:27:13");
+assert.ok(formattedUtc.includes("Selasa"), "Must format day as Selasa");
+assert.ok(formattedUtc.includes("29 September 2026"), "Must format Indonesian date");
+assert.ok(formattedUtc.includes("20.27"), "Must format 24-hour time in UTC+7 Jakarta");
+assert.ok(formattedUtc.includes("WIB"), "Must format timezone name as WIB");
+console.log("✔ formatDateTimeJakarta 24h Asia/Jakarta passes");
 
 // 2c2. Check formatReceiptPreview and Confirmation / Wallet Keyboards
 const previewFormatted = formatReceiptPreview(
