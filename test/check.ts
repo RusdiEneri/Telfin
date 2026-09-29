@@ -15,10 +15,13 @@ import { logger } from "../src/utils/logger.js";
 import { cleanupPendingUploads } from "../src/services/receipt.service.js";
 import { formatTransactionDetail, formatReceiptPreview } from "../src/bot/handlers.js";
 import { getAllowedUserIds, BOT_COMMANDS } from "../src/bot/index.js";
-import { createTransactionConfirmationKeyboard, createWalletSelectionKeyboard } from "../src/bot/keyboards.js";
+import { createTransactionConfirmationKeyboard, createWalletSelectionKeyboard, createImportConfirmationKeyboard } from "../src/bot/keyboards.js";
 import {
   escapeCsvCell,
   formatTransactionsCsv,
+  parseCsvLine,
+  parseCsvTransactions,
+  importTransactionsBulk,
   setBudget,
   getBudgetReport,
   checkBudgetWarning,
@@ -659,5 +662,68 @@ db.prepare("DELETE FROM wallets WHERE id = ?").run(testRecWalletId);
 db.prepare("DELETE FROM users WHERE id = ?").run(testRecUserId);
 console.log("✔ Recurring subscriptions CRUD & reminder scheduler logic pass");
 
+// 9. Check Native CSV Parsing, Resilience & Bulk Import (SQLite Transaction)
+// 9a. Test parseCsvLine
+const lineSimple = '1,2026-09-29,expense,Makanan,Indomaret,50000,Snack & Minum';
+assert.deepEqual(parseCsvLine(lineSimple), ["1", "2026-09-29", "expense", "Makanan", "Indomaret", "50000", "Snack & Minum"]);
+
+const lineWithCommas = '2,2026-09-29,expense,Makanan,"Indomaret, Jl. Tebet Raya",50000,"Roti, Susu, dan Kopi"';
+assert.deepEqual(parseCsvLine(lineWithCommas), ["2", "2026-09-29", "expense", "Makanan", "Indomaret, Jl. Tebet Raya", "50000", "Roti, Susu, dan Kopi"]);
+
+const lineWithEscapedQuotes = '3,2026-09-29,expense,Hiburan,Netflix,54000,"Paket ""Premium"""';
+assert.deepEqual(parseCsvLine(lineWithEscapedQuotes), ["3", "2026-09-29", "expense", "Hiburan", "Netflix", "54000", 'Paket "Premium"']);
+
+// 9b. Test parseCsvTransactions with header and row resilience
+const sampleCsv = `ID,Tanggal,Tipe,Kategori,Merchant,Nominal,Keterangan
+1,2026-09-29,expense,Makanan,Indomaret,50000,Belanja snack
+2,2026-09-29,income,Gaji,Kantor,8000000,Gaji bulanan
+3,2026-09-29,expense,Transport,"SPBU, Jl. Sudirman",100000,Bensin
+4,2026-09-29,expense,Makanan,Warteg,bukan_angka,Format nominal salah
+5,2026-09-29,invalid_type,Makanan,Warteg,25000,Format tipe salah
+6,2026-09-29,expense,Belanja,Online,150000,"Beli baju ""Biru"""`;
+
+const parsedCsv = parseCsvTransactions(sampleCsv);
+assert.equal(parsedCsv.totalRows, 6, "Total rows excluding header must be 6");
+assert.equal(parsedCsv.valid.length, 4, "Must extract 4 valid transactions");
+assert.equal(parsedCsv.skipped, 2, "Must skip 2 erroneous rows (invalid nominal & invalid type)");
+
+assert.equal(parsedCsv.valid[0].amount, 50000);
+assert.equal(parsedCsv.valid[0].merchant, "Indomaret");
+assert.equal(parsedCsv.valid[1].type, "income");
+assert.equal(parsedCsv.valid[1].amount, 8000000);
+assert.equal(parsedCsv.valid[2].merchant, "SPBU, Jl. Sudirman");
+assert.equal(parsedCsv.valid[3].note, 'Beli baju "Biru"');
+
+// 9c. Test bulk import via SQLite transaction
+const testImportUser = db.prepare("INSERT INTO users (telegram_user_id, name) VALUES ('888888', 'ImportUser')").run();
+const testImportUserId = Number(testImportUser.lastInsertRowid);
+const testImportWallet = db.prepare("INSERT INTO wallets (user_id, name, is_default) VALUES (?, 'ImportWallet', 1)").run(testImportUserId);
+const testImportWalletId = Number(testImportWallet.lastInsertRowid);
+
+const importedCount = importTransactionsBulk(testImportWalletId, parsedCsv.valid);
+assert.equal(importedCount, 4, "Must successfully bulk import 4 transactions");
+
+// Verify in SQLite
+const importedRows = db.prepare("SELECT * FROM transactions WHERE wallet_id = ? AND source = 'import' ORDER BY id ASC").all(testImportWalletId) as any[];
+assert.equal(importedRows.length, 4);
+assert.equal(importedRows[0].status, "confirmed");
+assert.equal(importedRows[0].merchant, "Indomaret");
+assert.equal(importedRows[1].type, "income");
+assert.equal(importedRows[1].amount, 8000000);
+
+// 9d. Test import confirmation keyboard & BOT_COMMANDS
+const importKb = createImportConfirmationKeyboard("test123abc");
+const flatImportButtons = importKb.inline_keyboard.flat();
+assert.ok(flatImportButtons.some((b) => b.callback_data === "confirm_import:test123abc"));
+assert.ok(flatImportButtons.some((b) => b.callback_data === "cancel_import:test123abc"));
+assert.ok(BOT_COMMANDS.some((c) => c.command === "import"));
+
+// Clean up test data
+db.prepare("DELETE FROM transactions WHERE wallet_id = ?").run(testImportWalletId);
+db.prepare("DELETE FROM wallets WHERE id = ?").run(testImportWalletId);
+db.prepare("DELETE FROM users WHERE id = ?").run(testImportUserId);
+console.log("✔ Native CSV parsing, error resilience & bulk import (SQLite Transaction) pass");
+
 console.log("🎉 All checks passed successfully!");
+
 

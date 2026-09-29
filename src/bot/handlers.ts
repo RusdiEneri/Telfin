@@ -37,6 +37,8 @@ import {
   recordTransactionFromRecurring,
   findActiveRecurringByName,
   markRecurringReminded,
+  parseCsvTransactions,
+  importTransactionsBulk,
 } from "../services/transaction.service.js";
 import { saveUploadedBuffer, processReceiptFile } from "../services/receipt.service.js";
 import {
@@ -44,6 +46,7 @@ import {
   createTransactionActionKeyboard,
   createDeleteConfirmationKeyboard,
   createWalletSelectionKeyboard,
+  createImportConfirmationKeyboard,
 } from "./keyboards.js";
 
 const MONTH_NAMES = [
@@ -577,7 +580,8 @@ export async function handleHelp(ctx: Context) {
     `• \`/riwayat\` — Lihat 5 transaksi terakhir (bisa edit/hapus)\n` +
     `• \`/rekap\` — Laporan & grafik pengeluaran per kategori\n` +
     `• \`/cari <kata>\` — Cari transaksi (contoh: \`/cari bensin\`)\n` +
-    `• \`/export\` — Ekspor seluruh transaksi ke file Excel/CSV\n\n` +
+    `• \`/export\` — Ekspor seluruh transaksi ke file Excel/CSV\n` +
+    `• \`/import\` — Impor data transaksi dari file CSV\n\n` +
     `🎯 *4. Batas Anggaran Bulanan*\n` +
     `• \`/anggaran <kategori> <nominal>\`\n` +
     `  _Contoh_: \`/anggaran makan 1500000\`\n` +
@@ -898,21 +902,136 @@ export async function handleRestore(ctx: Context) {
   );
 }
 
+export async function handleImport(ctx: Context) {
+  const promptText =
+    "📥 *Impor Data Transaksi (CSV)*\n\n" +
+    "1. Siapkan file data transaksi berformat `.csv`.\n" +
+    "2. *Balas (reply)* pesan ini dengan melampirkan file `.csv` tersebut sebagai Document, atau kirim file dokumen dengan caption `/import`.\n\n" +
+    "📋 *Format kolom standar*:\n" +
+    "`ID,Tanggal,Tipe,Kategori,Merchant,Nominal,Keterangan`\n\n" +
+    "💡 _Tips: Anda dapat langsung mengimpor file hasil dari perintah_ `/export`_._";
+
+  await ctx.reply(promptText, {
+    reply_markup: { force_reply: true },
+    parse_mode: "Markdown",
+  });
+}
+
 export async function handleDocument(ctx: Context) {
   const message = ctx.message;
   const doc = message?.document;
   if (!doc) return;
 
   const replyTo = message.reply_to_message;
-  const isReplyToRestorePrompt = replyTo?.text?.includes("Silakan balas pesan ini dengan mengunggah file backup .db Anda");
+  const isReplyToRestorePrompt =
+    replyTo?.text?.includes("Silakan balas pesan ini dengan mengunggah file backup .db Anda") ||
+    replyTo?.text?.includes("Memulihkan Database (Restore)");
   const hasRestoreCaption = message.caption?.trim() === "/restore";
 
-  if (!isReplyToRestorePrompt && !hasRestoreCaption) {
+  if (isReplyToRestorePrompt || hasRestoreCaption) {
+    return processRestoreDocument(ctx, doc);
+  }
+
+  const isReplyToImportPrompt =
+    replyTo?.text?.includes("Impor Data Transaksi (CSV)") ||
+    replyTo?.text?.includes("file .csv") ||
+    replyTo?.text?.includes("file `.csv`");
+  const hasImportCaption = message.caption?.trim() === "/import";
+  const isCsvDoc = (doc.file_name || "").toLowerCase().endsWith(".csv") || (doc.mime_type || "").includes("csv");
+
+  if (isReplyToImportPrompt || hasImportCaption || (isCsvDoc && replyTo)) {
+    return processImportDocument(ctx, doc);
+  }
+}
+
+async function processImportDocument(ctx: Context, doc: any) {
+  const fileName = (doc.file_name || "").toLowerCase();
+  const mimeType = (doc.mime_type || "").toLowerCase();
+  const isCsv = fileName.endsWith(".csv") || mimeType.includes("csv") || mimeType.includes("text/plain");
+
+  if (!isCsv) {
+    await ctx.reply("❌ File tidak valid. Harap unggah file dengan format `.csv`.", {
+      parse_mode: "Markdown",
+    });
     return;
   }
 
-  return processRestoreDocument(ctx, doc);
+  const statusMsg = await ctx.reply("⏳ _Membaca dan memverifikasi file CSV..._", {
+    parse_mode: "Markdown",
+  });
+
+  const uploadsDir = path.join(process.cwd(), "uploads");
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+
+  try {
+    const file = await ctx.getFile();
+    if (!file.file_path) {
+      throw new Error("File path dari Telegram tidak tersedia.");
+    }
+
+    const botToken = process.env.BOT_TOKEN;
+    const downloadUrl = `https://api.telegram.org/file/bot${botToken}/${file.file_path}`;
+    const res = await fetch(downloadUrl);
+    if (!res.ok) {
+      throw new Error(`Gagal mengunduh file (${res.status})`);
+    }
+
+    const buffer = Buffer.from(await res.arrayBuffer());
+    const csvContent = buffer.toString("utf-8");
+
+    const parsed = parseCsvTransactions(csvContent);
+    if (parsed.totalRows === 0) {
+      await ctx.api.editMessageText(
+        ctx.chat!.id,
+        statusMsg.message_id,
+        "❌ File CSV kosong atau tidak memiliki data transaksi."
+      );
+      return;
+    }
+
+    if (parsed.valid.length === 0) {
+      await ctx.api.editMessageText(
+        ctx.chat!.id,
+        statusMsg.message_id,
+        `❌ Tidak ada data yang valid untuk diimpor dari ${parsed.totalRows} baris. Pastikan format kolom sesuai.`
+      );
+      return;
+    }
+
+    // Save CSV to temporary file in uploads/
+    const importId = crypto.randomBytes(6).toString("hex");
+    const tempPath = path.join(uploadsDir, `import_${importId}.csv`);
+    await fs.promises.writeFile(tempPath, buffer);
+
+    const user = getTelegramUser(ctx);
+    const { walletId } = getOrCreateUserAndWallet(user.id, user.name);
+    const defaultWallet = getWalletById(walletId);
+    const walletName = defaultWallet ? defaultWallet.name : "Dompet Default";
+
+    let previewText =
+      `📂 Ditemukan *${parsed.totalRows}* baris data di file CSV.\n\n` +
+      `Apakah Anda ingin mengimpor semuanya ke *${walletName}*?`;
+
+    if (parsed.skipped > 0) {
+      previewText += `\n\n⚠️ _Catatan: ${parsed.skipped} baris formatnya tidak sesuai dan akan dilewati otomatis._`;
+    }
+
+    await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, previewText, {
+      parse_mode: "Markdown",
+      reply_markup: createImportConfirmationKeyboard(importId),
+    });
+  } catch (err: any) {
+    logger.error("Gagal memproses file CSV import:", err);
+    await ctx.api.editMessageText(
+      ctx.chat!.id,
+      statusMsg.message_id,
+      "❌ Terjadi kesalahan saat membaca file CSV. Pastikan file tidak rusak dan coba lagi."
+    );
+  }
 }
+
 
 async function processRestoreDocument(ctx: Context, doc: any) {
   const fileName = (doc.file_name || "").toLowerCase();
@@ -1183,6 +1302,74 @@ export async function handleCallbackQuery(ctx: Context) {
     await ctx.answerCallbackQuery({ text: "Penghapusan dibatalkan." });
     return;
   }
+
+  // 3b. Flow Konfirmasi Import CSV: confirm_import:<importId>
+  if (data.startsWith("confirm_import:")) {
+    const importId = data.slice("confirm_import:".length);
+    const uploadsDir = path.join(process.cwd(), "uploads");
+    const tempPath = path.join(uploadsDir, `import_${importId}.csv`);
+
+    if (!fs.existsSync(tempPath)) {
+      await ctx.answerCallbackQuery({ text: "Sesi impor telah kedaluwarsa atau file sudah diproses." });
+      return;
+    }
+
+    try {
+      const content = await fs.promises.readFile(tempPath, "utf-8");
+      const parsed = parseCsvTransactions(content);
+
+      const defaultWallet = userWallets.find((w) => w.is_default) || userWallets[0];
+      const targetWalletId = defaultWallet ? defaultWallet.id : userWallets[0]?.id;
+
+      if (!targetWalletId) {
+        await ctx.answerCallbackQuery({ text: "Dompet tidak ditemukan." });
+        return;
+      }
+
+      const importedCount = importTransactionsBulk(targetWalletId, parsed.valid);
+
+      // Clean up temp file
+      try {
+        await fs.promises.unlink(tempPath);
+      } catch (_) {}
+
+      const walletName = defaultWallet ? defaultWallet.name : "Dompet Default";
+      let summaryMsg = `✅ Berhasil mengimpor *${importedCount}* transaksi. Saldo telah diperbarui.`;
+      if (parsed.skipped > 0) {
+        summaryMsg =
+          `✅ Berhasil mengimpor *${importedCount}* transaksi.\n` +
+          `⚠️ *${parsed.skipped}* baris dilewati karena format tidak sesuai.\n\n` +
+          `Saldo dompet *${walletName}* telah diperbarui.`;
+      }
+
+      await ctx.editMessageText(summaryMsg, { parse_mode: "Markdown" });
+      await ctx.answerCallbackQuery({ text: `Berhasil mengimpor ${importedCount} transaksi!` });
+    } catch (err: any) {
+      logger.error("Error saat bulk insert transaksi import:", err);
+      await ctx.editMessageText("❌ Terjadi kesalahan saat mengimpor data ke database. Silakan coba lagi.");
+      await ctx.answerCallbackQuery({ text: "Gagal mengimpor data." });
+    }
+    return;
+  }
+
+  // 3c. Flow Batal Import CSV: cancel_import:<importId>
+  if (data.startsWith("cancel_import:")) {
+    const importId = data.slice("cancel_import:".length);
+    const uploadsDir = path.join(process.cwd(), "uploads");
+    const tempPath = path.join(uploadsDir, `import_${importId}.csv`);
+    if (fs.existsSync(tempPath)) {
+      try {
+        await fs.promises.unlink(tempPath);
+      } catch (_) {}
+    }
+
+    await ctx.editMessageText("❌ *Impor Dibatalkan*\nData dari file CSV tidak dimasukkan ke dalam dompet.", {
+      parse_mode: "Markdown",
+    });
+    await ctx.answerCallbackQuery({ text: "Impor dibatalkan." });
+    return;
+  }
+
 
   // 4. Flow Edit: edit_<id>
   if (data.startsWith("edit_")) {

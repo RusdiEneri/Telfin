@@ -20,6 +20,7 @@ import {
   handleTambahDompet,
   handleCari,
   handleExport,
+  handleImport,
   handleAnggaran,
   handleCekAnggaran,
   handleLangganan,
@@ -40,6 +41,7 @@ export const BOT_COMMANDS = [
   { command: "hapuslangganan", description: "Hapus tagihan rutin (<id>)" },
   { command: "rekap", description: "Ringkasan bulanan & kategori terbesar" },
   { command: "export", description: "Ekspor seluruh transaksi ke CSV" },
+  { command: "import", description: "Impor data transaksi dari file CSV" },
   { command: "expense", description: "Catat pengeluaran (<jumlah> <ket>)" },
   { command: "income", description: "Catat pemasukan (<jumlah> <ket>)" },
   { command: "edit", description: "Edit transaksi (<id> <nominal> <ket>)" },
@@ -109,6 +111,7 @@ export function createBot(token: string): Bot {
   bot.command("hapuslangganan", handleHapusLangganan);
   bot.command("rekap", handleRekap);
   bot.command("export", handleExport);
+  bot.command("import", handleImport);
   bot.command("help", handleHelp);
   bot.command("expense", handleExpense);
   bot.command("income", handleIncome);

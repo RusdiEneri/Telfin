@@ -34,3 +34,10 @@ export function createDeleteConfirmationKeyboard(transactionId: number): InlineK
     .text("✅ Ya, Hapus", `confirm_delete_${transactionId}`)
     .text("❌ Batal", `cancel_delete_${transactionId}`);
 }
+
+export function createImportConfirmationKeyboard(importId: string): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("✅ Ya, Import", `confirm_import:${importId}`)
+    .text("❌ Batal", `cancel_import:${importId}`);
+}
+
