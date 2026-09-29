@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS wallets (
   user_id INTEGER NOT NULL,
   name TEXT NOT NULL DEFAULT 'Dompet Utama',
   currency TEXT NOT NULL DEFAULT 'IDR',
+  is_default INTEGER NOT NULL DEFAULT 1,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(user_id) REFERENCES users(id)
 );

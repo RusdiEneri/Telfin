@@ -8,20 +8,34 @@ import {
   handleIncome,
   handleHapus,
   handleEdit,
+  handleBackup,
+  handleRestore,
+  handleDocument,
   handleRekap,
   handlePhoto,
   handleCallbackQuery,
   handleTextMessage,
+  handleDompet,
+  handleSetDefault,
+  handleTambahDompet,
+  handleCari,
+  handleExport,
 } from "./handlers.js";
 
 export const BOT_COMMANDS = [
   { command: "saldo", description: "Cek saldo & ringkasan dompet" },
+  { command: "dompet", description: "Lihat daftar dompet & saldo" },
+  { command: "setdefault", description: "Ubah dompet utama (<nama_dompet>)" },
   { command: "riwayat", description: "Lihat 5 transaksi terakhir & kelola" },
+  { command: "cari", description: "Cari transaksi (<kata_kunci>)" },
   { command: "rekap", description: "Ringkasan bulanan & kategori terbesar" },
+  { command: "export", description: "Ekspor seluruh transaksi ke CSV" },
   { command: "expense", description: "Catat pengeluaran (<jumlah> <ket>)" },
   { command: "income", description: "Catat pemasukan (<jumlah> <ket>)" },
   { command: "edit", description: "Edit transaksi (<id> <nominal> <ket>)" },
   { command: "hapus", description: "Hapus transaksi (<id>)" },
+  { command: "backup", description: "Unduh file backup database .db" },
+  { command: "restore", description: "Pulihkan database dari file .db" },
   { command: "help", description: "Panduan lengkap penggunaan bot" },
 ];
 
@@ -73,15 +87,23 @@ export function createBot(token: string): Bot {
 
   bot.command("start", handleStart);
   bot.command("saldo", handleSaldo);
+  bot.command("dompet", handleDompet);
+  bot.command("setdefault", handleSetDefault);
+  bot.command("tambahdompet", handleTambahDompet);
   bot.command("riwayat", handleRiwayat);
+  bot.command("cari", handleCari);
   bot.command("rekap", handleRekap);
+  bot.command("export", handleExport);
   bot.command("help", handleHelp);
   bot.command("expense", handleExpense);
   bot.command("income", handleIncome);
   bot.command("hapus", handleHapus);
   bot.command("edit", handleEdit);
+  bot.command("backup", handleBackup);
+  bot.command("restore", handleRestore);
 
   bot.on(":photo", handlePhoto);
+  bot.on("message:document", handleDocument);
   bot.on("callback_query:data", handleCallbackQuery);
   bot.on("message:text", handleTextMessage);
 
