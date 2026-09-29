@@ -1,5 +1,6 @@
 import db from "../db/index.js";
 import type { ReceiptExtraction } from "../validations/receipt.schema.js";
+import { parseRupToInt, formatRupiah } from "../utils/money.js";
 
 export interface UserWallet {
   userId: number;
@@ -402,6 +403,176 @@ export function formatTransactionsCsv(transactions: TransactionRecord[]): string
   return [header, ...rows].join("\n");
 }
 
+export function parseCsvLine(line: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++; // skip escaped double quote
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === "," && !inQuotes) {
+      result.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
+export interface ParsedImportTransaction {
+  type: "income" | "expense";
+  amount: number;
+  merchant?: string | null;
+  category?: string | null;
+  note?: string | null;
+  occurred_at?: string | null;
+}
+
+export function parseCsvTransactions(csvContent: string): {
+  valid: ParsedImportTransaction[];
+  skipped: number;
+  totalRows: number;
+} {
+  const cleanContent = csvContent.replace(/^\uFEFF/, "").trim();
+  if (!cleanContent) {
+    return { valid: [], skipped: 0, totalRows: 0 };
+  }
+
+  const lines = cleanContent.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+  if (lines.length === 0) {
+    return { valid: [], skipped: 0, totalRows: 0 };
+  }
+
+  let startIndex = 0;
+  const firstRow = parseCsvLine(lines[0]).map((h) => h.toLowerCase());
+  const hasHeader = firstRow.some((col) => col.includes("tanggal") || col.includes("nominal") || col.includes("tipe"));
+
+  // Default column mappings: ID=0, Tanggal=1, Tipe=2, Kategori=3, Merchant=4, Nominal=5, Keterangan=6
+  let colDate = 1;
+  let colType = 2;
+  let colCategory = 3;
+  let colMerchant = 4;
+  let colAmount = 5;
+  let colNote = 6;
+
+  if (hasHeader) {
+    startIndex = 1;
+    const findCol = (name: string, fallback: number) => {
+      const idx = firstRow.findIndex((c) => c.includes(name));
+      return idx >= 0 ? idx : fallback;
+    };
+    colDate = findCol("tanggal", 1);
+    colType = findCol("tipe", 2);
+    colCategory = findCol("kategori", 3);
+    colMerchant = findCol("merchant", 4);
+    colAmount = findCol("nominal", 5);
+    colNote = findCol("keterangan", 6);
+  }
+
+  const valid: ParsedImportTransaction[] = [];
+  let skipped = 0;
+  const dataLines = lines.slice(startIndex);
+
+  for (const line of dataLines) {
+    const cols = parseCsvLine(line);
+    if (cols.length < 2) {
+      skipped++;
+      continue;
+    }
+
+    const rawAmount = cols[colAmount] !== undefined ? cols[colAmount] : "";
+    const amount = parseRupToInt(rawAmount);
+    if (amount <= 0) {
+      skipped++;
+      continue;
+    }
+
+    const rawType = (cols[colType] || "").toLowerCase().trim();
+    let type: "income" | "expense";
+    if (["expense", "pengeluaran", "keluar"].includes(rawType)) {
+      type = "expense";
+    } else if (["income", "pemasukan", "masuk"].includes(rawType)) {
+      type = "income";
+    } else {
+      skipped++;
+      continue;
+    }
+
+    const rawDate = (cols[colDate] || "").trim();
+    const occurredAt = /^\d{4}-\d{2}-\d{2}/.test(rawDate)
+      ? rawDate.slice(0, 10)
+      : new Date().toISOString().slice(0, 10);
+
+    const category = cols[colCategory]?.trim() || (type === "expense" ? "Umum" : "Pemasukan");
+    const merchant = cols[colMerchant]?.trim() || null;
+    const note = cols[colNote]?.trim() || null;
+
+    valid.push({
+      type,
+      amount,
+      merchant,
+      category,
+      note,
+      occurred_at: occurredAt,
+    });
+  }
+
+  return {
+    valid,
+    skipped,
+    totalRows: dataLines.length,
+  };
+}
+
+export function importTransactionsBulk(
+  walletId: number,
+  transactions: ParsedImportTransaction[]
+): number {
+  if (transactions.length === 0) return 0;
+
+  const insertStmt = db.prepare(`
+    INSERT INTO transactions (
+      wallet_id,
+      type,
+      amount,
+      merchant,
+      category,
+      note,
+      occurred_at,
+      status,
+      source
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'confirmed', 'import')
+  `);
+
+  const insertBulk = db.transaction((rows: ParsedImportTransaction[]) => {
+    let count = 0;
+    for (const r of rows) {
+      insertStmt.run(
+        walletId,
+        r.type,
+        r.amount,
+        r.merchant || null,
+        r.category || null,
+        r.note || null,
+        r.occurred_at || null
+      );
+      count++;
+    }
+    return count;
+  });
+
+  return insertBulk(transactions);
+}
+
 export interface BudgetRecord {
   id: number;
   wallet_id: number;
@@ -635,5 +806,46 @@ export function recordTransactionFromRecurring(
     occurredAt
   );
   return Number(info.lastInsertRowid);
+}
+
+export function buildFinancialRecapSummary(
+  recap: MonthlyRecap,
+  budgets: BudgetReportItem[],
+  monthName: string,
+  year: number
+): string {
+  const top3 =
+    recap.topCategories.slice(0, 3).map((c) =>
+      `- ${c.category}: ${formatRupiah(c.total)} (${c.percentage}%)`
+    ).join("\n") || "- Belum ada catatan pengeluaran";
+
+  const overbudgetItems = budgets.filter((b) => b.total_spent > b.amount_limit);
+  let budgetStatus = "Belum ada target anggaran yang diset.";
+  if (budgets.length > 0) {
+    if (overbudgetItems.length > 0) {
+      budgetStatus =
+        `Overbudget pada kategori: ` +
+        overbudgetItems
+          .map(
+            (b) =>
+              `${b.category} (pengeluaran ${formatRupiah(b.total_spent)} / limit ${formatRupiah(b.amount_limit)})`
+          )
+          .join(", ");
+    } else {
+      budgetStatus = "Semua kategori pengeluaran masih aman (di bawah batas anggaran / under-budget).";
+    }
+  }
+
+  const sign = recap.netBalance >= 0 ? "+" : "-";
+  const netFormatted = `${sign}${formatRupiah(Math.abs(recap.netBalance))}`;
+
+  return (
+    `Periode: ${monthName} ${year}\n` +
+    `Total Pemasukan: ${formatRupiah(recap.totalIncome)}\n` +
+    `Total Pengeluaran: ${formatRupiah(recap.totalExpense)}\n` +
+    `Selisih (Net): ${netFormatted}\n` +
+    `Top 3 Kategori Pengeluaran Terbesar:\n${top3}\n` +
+    `Status Anggaran: ${budgetStatus}`
+  );
 }
 

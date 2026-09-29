@@ -179,3 +179,106 @@ export async function parseReceiptImage(filePath: string): Promise<ReceiptExtrac
 
   return extractWithGemini(filePath, mimeType, base64Data);
 }
+
+async function generateInsightWithGemini(prompt: string): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY belum dikonfigurasi di file .env");
+  }
+
+  const primaryModel = process.env.GEMINI_MODEL || "gemini-3.5-flash";
+  const candidateModels = Array.from(new Set([primaryModel, "gemini-3.5-flash", "gemini-3-flash-preview"]));
+
+  let lastError: Error | null = null;
+
+  for (const model of candidateModels) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(15000),
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [{ text: prompt }],
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      logger.warn(`Gemini API (${model}) returned ${response.status}: ${errorText}`);
+      lastError = new Error(`Gagal menghasilkan analisa dengan Gemini (${response.status})`);
+      if (response.status === 503 || response.status === 429 || response.status >= 500) {
+        continue;
+      }
+      throw lastError;
+    }
+
+    const result: any = await response.json();
+    const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) {
+      throw new Error("Gemini tidak mengembalikan teks analisa.");
+    }
+
+    return text.trim();
+  }
+
+  throw lastError || new Error("Gagal menghasilkan analisa dengan semua model Gemini yang tersedia.");
+}
+
+async function generateInsightWithOpenAI(prompt: string): Promise<string> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY belum dikonfigurasi di file .env");
+  }
+
+  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const url = "https://api.openai.com/v1/chat/completions";
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    signal: AbortSignal.timeout(15000),
+    body: JSON.stringify({
+      model,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    logger.error(`OpenAI API error (${response.status}): ${errorText}`);
+    throw new Error(`Gagal menghasilkan analisa dengan OpenAI (${response.status})`);
+  }
+
+  const result: any = await response.json();
+  const text = result?.choices?.[0]?.message?.content;
+  if (!text) {
+    throw new Error("OpenAI tidak mengembalikan teks analisa.");
+  }
+
+  return text.trim();
+}
+
+export async function generateFinancialInsight(recapSummary: string): Promise<string> {
+  const prompt = `Kamu adalah asisten keuangan pribadi yang ramah, objektif, dan tidak menghakimi. Berikut adalah rekap keuangan user bulan ini:
+${recapSummary}
+
+Berikan 2 kalimat singkat berupa pujian jika user hemat/berhasil under-budget, atau teguran/saran praktis yang actionable jika user boros di kategori tertentu. Gunakan bahasa Indonesia yang santai dan gunakan 1-2 emoji.`;
+
+  const provider = (process.env.AI_PROVIDER || "gemini").toLowerCase();
+  logger.info(`Meminta analisa insight keuangan bulanan menggunakan provider AI: ${provider}`);
+
+  if (provider === "openai") {
+    return generateInsightWithOpenAI(prompt);
+  }
+
+  return generateInsightWithGemini(prompt);
+}
+
