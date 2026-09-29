@@ -43,7 +43,7 @@ export interface MonthlyRecap {
   totalIncome: number;
   totalExpense: number;
   netBalance: number;
-  topCategories: Array<{ category: string; total: number }>;
+  topCategories: Array<{ category: string; total: number; percentage: number }>;
 }
 
 export function getOrCreateUserAndWallet(telegramUserId: string, name?: string): UserWallet {
@@ -320,7 +320,7 @@ export function getMonthlyRecap(walletId: number, yearMonth: string): MonthlyRec
       AND COALESCE(occurred_at, substr(created_at, 1, 10)) LIKE ? || '%'
     GROUP BY category
     ORDER BY total DESC
-    LIMIT 3
+    LIMIT 5
   `);
 
   const topCategories = (
@@ -328,10 +328,15 @@ export function getMonthlyRecap(walletId: number, yearMonth: string): MonthlyRec
       category: string;
       total: number;
     }>
-  ).map((row) => ({
-    category: row.category || "Lain-lain",
-    total: Number(row.total),
-  }));
+  ).map((row) => {
+    const total = Number(row.total);
+    const percentage = totalExpense > 0 ? Math.round((total / totalExpense) * 100) : 0;
+    return {
+      category: row.category || "Lain-lain",
+      total,
+      percentage,
+    };
+  });
 
   return {
     yearMonth,

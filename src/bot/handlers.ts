@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import db, { initDb, dbPath, dataDir } from "../db/index.js";
-import { formatRupiah, parseRupToInt } from "../utils/money.js";
+import { formatRupiah, parseRupToInt, generateBarChart, getCategoryEmoji } from "../utils/money.js";
 import { formatDateTimeJakarta, getCurrentYearMonthJakarta } from "../utils/date.js";
 import { logger } from "../utils/logger.js";
 import {
@@ -225,14 +225,16 @@ export async function handleRekap(ctx: Context) {
     `💰 *Total Pemasukan*: ${formatRupiah(recap.totalIncome)}\n` +
     `💸 *Total Pengeluaran*: ${formatRupiah(recap.totalExpense)}\n` +
     `📈 *Selisih (Net)*: *${netFormatted}*\n\n` +
-    `🏆 *3 Kategori Pengeluaran Terbesar*:\n`;
+    `📊 *Distribusi Pengeluaran per Kategori*:\n`;
 
   if (recap.topCategories.length === 0) {
     text += `_(Belum ada catatan pengeluaran di bulan ini)_\n`;
   } else {
-    recap.topCategories.forEach((cat, idx) => {
-      text += `${idx + 1}. *${cat.category}*: ${formatRupiah(cat.total)}\n`;
-    });
+    for (const cat of recap.topCategories) {
+      const emoji = getCategoryEmoji(cat.category);
+      const bar = generateBarChart(cat.percentage);
+      text += `${emoji} *${cat.category}*  ${bar} ${cat.percentage}% (${formatRupiah(cat.total)})\n`;
+    }
   }
 
   await ctx.reply(text.trim(), { parse_mode: "Markdown" });

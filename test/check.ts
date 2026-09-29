@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { formatRupiah, parseRupToInt, parseRupiah } from "../src/utils/money.js";
+import {
+  formatRupiah,
+  parseRupToInt,
+  parseRupiah,
+  generateBarChart,
+  getCategoryEmoji,
+} from "../src/utils/money.js";
 import { formatDateTimeJakarta, getCurrentYearMonthJakarta } from "../src/utils/date.js";
 import { ReceiptExtractionSchema } from "../src/validations/receipt.schema.js";
 import { logger } from "../src/utils/logger.js";
@@ -34,6 +40,18 @@ assert.equal(parseRupToInt("-5000"), 0, "Negative amount must return 0");
 assert.equal(parseRupToInt(""), 0, "Empty string must return 0");
 assert.equal(parseRupiah("50000"), 50000);
 console.log("✔ Money utilities and parseRupToInt pass");
+
+// 1b. Check generateBarChart emoji visualizations and thresholds
+assert.equal(generateBarChart(40), "🟥🟥🟥🟥⬜⬜⬜⬜⬜⬜");
+assert.equal(generateBarChart(20), "🟧🟧⬜⬜⬜⬜⬜⬜⬜⬜");
+assert.equal(generateBarChart(10), "🟨⬜⬜⬜⬜⬜⬜⬜⬜⬜");
+assert.equal(generateBarChart(5), "🟩⬜⬜⬜⬜⬜⬜⬜⬜⬜");
+assert.equal(generateBarChart(0), "⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜");
+assert.equal(generateBarChart(100), "🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥");
+assert.equal(getCategoryEmoji("Makanan & Minuman"), "🍔");
+assert.equal(getCategoryEmoji("Transportasi"), "🛵");
+assert.equal(getCategoryEmoji("Kopi Sore"), "☕");
+console.log("✔ generateBarChart and getCategoryEmoji pass");
 
 // 2. Check Zod Schema
 const validPayload = {
