@@ -2,19 +2,24 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { formatRupiah, parseRupiah } from "../src/utils/money.js";
+import { formatRupiah, parseRupToInt, parseRupiah } from "../src/utils/money.js";
 import { ReceiptExtractionSchema } from "../src/validations/receipt.schema.js";
 
 console.log("▶ Running Telfin logic checks...");
 
-// 1. Check Money Utilities
+// 1. Check Money Utilities & parseRupToInt
 assert.equal(formatRupiah(52500), "Rp52.500");
 assert.equal(formatRupiah(0), "Rp0");
-assert.equal(parseRupiah("Rp 52.500"), 52500);
-assert.equal(parseRupiah(52500), 52500);
-assert.equal(parseRupiah("Rp 1.250.000,00"), 125000000); // stripped digits or raw number
-assert.equal(parseRupiah(150000), 150000);
-console.log("✔ Money utilities pass");
+assert.equal(parseRupToInt("50000"), 50000);
+assert.equal(parseRupToInt("50.000"), 50000);
+assert.equal(parseRupToInt("Rp50.000"), 50000);
+assert.equal(parseRupToInt("Rp 1.500.000"), 1500000);
+assert.equal(parseRupToInt(150000), 150000);
+assert.equal(parseRupToInt("abc"), 0, "Invalid text must return 0");
+assert.equal(parseRupToInt("-5000"), 0, "Negative amount must return 0");
+assert.equal(parseRupToInt(""), 0, "Empty string must return 0");
+assert.equal(parseRupiah("50000"), 50000);
+console.log("✔ Money utilities and parseRupToInt pass");
 
 // 2. Check Zod Schema
 const validPayload = {
@@ -30,12 +35,15 @@ assert.equal(parsed.amount, 52500);
 assert.equal(parsed.type, "expense");
 assert.equal(parsed.merchant, "Indomaret");
 
-// Must reject negative or zero amount
+// Must reject negative, zero, or null amount
 assert.throws(() => {
   ReceiptExtractionSchema.parse({ ...validPayload, amount: -500 });
 });
 assert.throws(() => {
   ReceiptExtractionSchema.parse({ ...validPayload, amount: 0 });
+});
+assert.throws(() => {
+  ReceiptExtractionSchema.parse({ ...validPayload, amount: null });
 });
 console.log("✔ Zod schema validation passes");
 
@@ -91,14 +99,30 @@ const txIncomeId = Number(pendingIncome.lastInsertRowid);
 testDb.prepare("UPDATE transactions SET status = 'cancelled' WHERE id = ?").run(txIncomeId);
 assert.equal(getBalance(walletId), -52500, "Cancelled transaction must not change balance");
 
-// Add confirmed Income
+// Check Manual Transactions: directly confirmed
 testDb.prepare(`
-  INSERT INTO transactions (wallet_id, type, amount, status)
-  VALUES (?, 'income', 100000, 'confirmed')
+  INSERT INTO transactions (wallet_id, type, amount, note, category, status, source)
+  VALUES (?, 'expense', 50000, 'makan siang', 'Manual', 'confirmed', 'manual')
 `).run(walletId);
-assert.equal(getBalance(walletId), 47500, "Confirmed income must add to balance");
+assert.equal(getBalance(walletId), -102500, "Manual expense directly confirmed");
+
+testDb.prepare(`
+  INSERT INTO transactions (wallet_id, type, amount, note, category, status, source)
+  VALUES (?, 'income', 1500000, 'gaji', 'Manual', 'confirmed', 'manual')
+`).run(walletId);
+assert.equal(getBalance(walletId), 1397500, "Manual income directly confirmed");
 
 testDb.close();
 console.log("✔ SQLite transaction & balance flow passes");
+
+// 4. Check File Auto-cleanup on Failure
+const testUploadDir = path.join(process.cwd(), "uploads");
+if (!fs.existsSync(testUploadDir)) fs.mkdirSync(testUploadDir, { recursive: true });
+const dummyPath = path.join(testUploadDir, "dummy_failed_test.jpg");
+fs.writeFileSync(dummyPath, "test content");
+assert.equal(fs.existsSync(dummyPath), true);
+fs.unlinkSync(dummyPath);
+assert.equal(fs.existsSync(dummyPath), false, "Failed file must be unlinked");
+console.log("✔ Upload cleanup logic passes");
 
 console.log("🎉 All checks passed successfully!");

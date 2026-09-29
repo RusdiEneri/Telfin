@@ -92,6 +92,38 @@ export function createPendingTransaction(
   return Number(info.lastInsertRowid);
 }
 
+export function createManualTransaction(
+  walletId: number,
+  type: "income" | "expense",
+  amount: number,
+  note: string,
+  category = "Manual"
+): number {
+  const insert = db.prepare(`
+    INSERT INTO transactions (
+      wallet_id,
+      type,
+      amount,
+      note,
+      category,
+      occurred_at,
+      status,
+      source
+    ) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', 'manual')
+  `);
+
+  const info = insert.run(
+    walletId,
+    type,
+    amount,
+    note || null,
+    category,
+    new Date().toISOString().slice(0, 10)
+  );
+
+  return Number(info.lastInsertRowid);
+}
+
 export function confirmTransaction(transactionId: number, walletId: number): boolean {
   const update = db.prepare(`
     UPDATE transactions

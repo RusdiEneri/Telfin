@@ -1,10 +1,12 @@
 import type { Context } from "grammy";
+import fs from "node:fs";
 import path from "node:path";
-import { formatRupiah } from "../utils/money.js";
+import { formatRupiah, parseRupToInt } from "../utils/money.js";
 import { logger } from "../utils/logger.js";
 import {
   getOrCreateUserAndWallet,
   createPendingTransaction,
+  createManualTransaction,
   confirmTransaction,
   cancelTransaction,
   getTransactionById,
@@ -35,11 +37,89 @@ export async function handleStart(ctx: Context) {
     `2. AI akan mengekstrak nominal, toko, kategori, dan detailnya.\n` +
     `3. Klik tombol *Konfirmasi* untuk memasukkan transaksi ke saldo.\n\n` +
     `⚙️ *Perintah yang Tersedia*:\n` +
+    `• /expense <jumlah> <keterangan> - Catat pengeluaran manual\n` +
+    `• /income <jumlah> <keterangan> - Catat pemasukan manual\n` +
     `• /saldo - Cek saldo dompet & ringkasan\n` +
     `• /riwayat - Lihat 5 transaksi terakhir\n` +
     `• /help - Panduan lengkap`;
 
   await ctx.reply(welcomeText, { parse_mode: "Markdown" });
+}
+
+export async function handleExpense(ctx: Context) {
+  const match = ctx.match as string | undefined;
+  if (!match || !match.trim()) {
+    await ctx.reply(
+      "❌ Format salah.\n\nContoh penggunaan:\n`/expense 50000 makan siang`",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const parts = match.trim().split(/\s+/);
+  const amountStr = parts[0];
+  const note = parts.slice(1).join(" ").trim();
+  const amount = parseRupToInt(amountStr);
+
+  if (!amount || !note) {
+    await ctx.reply(
+      "❌ Format salah.\n\nContoh penggunaan:\n`/expense 50000 makan siang`",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const user = getTelegramUser(ctx);
+  const { walletId } = getOrCreateUserAndWallet(user.id, user.name);
+
+  createManualTransaction(walletId, "expense", amount, note);
+  const { balance } = getWalletBalance(walletId);
+
+  const replyText =
+    `✅ *Pengeluaran Berhasil Dicatat!*\n\n` +
+    `🔴 *Nominal*: ${formatRupiah(amount)}\n` +
+    `📝 *Keterangan*: ${note}\n\n` +
+    `💰 *Saldo Saat Ini*: *${formatRupiah(balance)}*`;
+
+  await ctx.reply(replyText, { parse_mode: "Markdown" });
+}
+
+export async function handleIncome(ctx: Context) {
+  const match = ctx.match as string | undefined;
+  if (!match || !match.trim()) {
+    await ctx.reply(
+      "❌ Format salah.\n\nContoh penggunaan:\n`/income 1500000 gaji`",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const parts = match.trim().split(/\s+/);
+  const amountStr = parts[0];
+  const note = parts.slice(1).join(" ").trim();
+  const amount = parseRupToInt(amountStr);
+
+  if (!amount || !note) {
+    await ctx.reply(
+      "❌ Format salah.\n\nContoh penggunaan:\n`/income 1500000 gaji`",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const user = getTelegramUser(ctx);
+  const { walletId } = getOrCreateUserAndWallet(user.id, user.name);
+
+  createManualTransaction(walletId, "income", amount, note);
+  const { balance } = getWalletBalance(walletId);
+
+  const replyText =
+    `✅ *Pemasukan Berhasil Dicatat!*\n\n` +
+    `🟢 *Nominal*: ${formatRupiah(amount)}\n` +
+    `📝 *Keterangan*: ${note}\n\n` +
+    `💰 *Saldo Saat Ini*: *${formatRupiah(balance)}*`;
+
+  await ctx.reply(replyText, { parse_mode: "Markdown" });
 }
 
 export async function handleSaldo(ctx: Context) {
@@ -85,13 +165,15 @@ export async function handleHelp(ctx: Context) {
   const helpText =
     `📖 *Panduan Penggunaan Bot*\n\n` +
     `1. *Kirim Foto Nota*: Foto nota Anda, kirim ke chat ini. AI akan mengekstrak nominal secara otomatis.\n` +
-    `2. *Konfirmasi Transaksi*: Transaksi awalnya berstatus *pending*. Anda harus klik '✅ Konfirmasi' agar masuk ke saldo.\n` +
-    `3. *Batalkan*: Klik '❌ Batalkan' jika data salah atau nota tidak ingin dicatat.\n\n` +
+    `2. *Konfirmasi Transaksi*: Transaksi dari nota berstatus *pending*. Klik '✅ Konfirmasi' agar masuk ke saldo.\n` +
+    `3. *Batalkan*: Klik '❌ Batalkan' jika data salah atau nota tidak ingin dicatat.\n` +
+    `4. *Input Manual*: Catat transaksi tanpa foto dengan perintah manual.\n\n` +
     `*Daftar Perintah*:\n` +
-    `• /start - Memulai bot & cek status dompet\n` +
-    `• /saldo - Menampilkan sisa saldo dan total pengeluaran/pemasukan\n` +
-    `• /riwayat - Melihat daftar riwayat transaksi terkonfirmasi\n` +
-    `• /help - Menampilkan pesan bantuan ini`;
+    `• /expense <jumlah> <keterangan> - Catat pengeluaran manual (contoh: /expense 50000 makan siang)\n` +
+    `• /income <jumlah> <keterangan> - Catat pemasukan manual (contoh: /income 1500000 gaji)\n` +
+    `• /saldo - Menampilkan sisa saldo dan ringkasan\n` +
+    `• /riwayat - Melihat daftar riwayat 5 transaksi terakhir\n` +
+    `• /help - Menampilkan pesan panduan ini`;
 
   await ctx.reply(helpText, { parse_mode: "Markdown" });
 }
@@ -110,6 +192,8 @@ export async function handlePhoto(ctx: Context) {
     parse_mode: "Markdown",
   });
 
+  let localPath: string | null = null;
+
   try {
     const file = await ctx.getFile();
     if (!file.file_path) {
@@ -125,9 +209,14 @@ export async function handlePhoto(ctx: Context) {
 
     const buffer = Buffer.from(await res.arrayBuffer());
     const ext = path.extname(file.file_path) || ".jpg";
-    const localPath = saveUploadedBuffer(buffer, ext);
+    localPath = saveUploadedBuffer(buffer, ext);
 
     const extraction = await processReceiptFile(localPath);
+
+    // Validate that extraction has a valid positive amount
+    if (!extraction || !extraction.amount || extraction.amount <= 0) {
+      throw new Error("Total pada nota tidak terdeteksi atau tidak valid.");
+    }
 
     // Save as pending transaction
     const txId = createPendingTransaction(walletId, extraction, localPath);
@@ -150,14 +239,21 @@ export async function handlePhoto(ctx: Context) {
     });
   } catch (error: any) {
     logger.error("Error processing receipt photo:", error);
-    const errorMsg =
-      `❌ *Gagal membaca nota*\n\n` +
-      `Penyebab: ${error.message || "Foto kurang jelas atau terjadi kesalahan AI."}\n` +
-      `Silakan coba foto ulang dengan pencahayaan yang cukup.`;
 
-    await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, errorMsg, {
-      parse_mode: "Markdown",
-    });
+    // Clean up uploaded file if processing failed so it doesn't leave junk
+    if (localPath && fs.existsSync(localPath)) {
+      try {
+        fs.unlinkSync(localPath);
+        logger.info(`File nota gagal dibersihkan: ${localPath}`);
+      } catch (unlinkErr) {
+        logger.error("Gagal menghapus file nota gagal:", unlinkErr);
+      }
+    }
+
+    const errorMsg =
+      "Maaf, saya tidak bisa membaca total di nota ini. Pastikan foto tidak blur, tidak terpotong, dan terlihat jelas. Atau kamu bisa input manual dengan mengetik: /expense [jumlah] [keterangan]";
+
+    await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, errorMsg);
   }
 }
 

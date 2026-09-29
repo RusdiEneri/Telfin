@@ -1,5 +1,5 @@
 /**
- * Format integer rupiah to display string (e.g. 52500 -> "Rp 52.500")
+ * Format integer rupiah to display string (e.g. 52500 -> "Rp52.500")
  */
 export function formatRupiah(amount: number): string {
   const formatted = new Intl.NumberFormat("id-ID", {
@@ -10,14 +10,29 @@ export function formatRupiah(amount: number): string {
 }
 
 /**
- * Clean & parse any raw string or number into an integer rupiah value.
+ * Parse input string/number into an integer rupiah.
+ * Returns a positive integer, or 0 if invalid.
  */
-export function parseRupiah(input: string | number): number {
+export function parseRupToInt(input: string | number): number {
   if (typeof input === "number") {
-    return Math.round(input);
+    return Number.isFinite(input) && input > 0 ? Math.round(input) : 0;
   }
-  // Remove non-digit characters
-  const clean = input.replace(/[^0-9]/g, "");
-  const parsed = parseInt(clean, 10);
-  return isNaN(parsed) ? 0 : parsed;
+  if (!input || typeof input !== "string") {
+    return 0;
+  }
+
+  const trimmed = input.trim();
+  if (trimmed.includes("-")) {
+    return 0;
+  }
+
+  // Strip currency prefix and strip trailing ,00 or .00 cents if present
+  const cleaned = trimmed.replace(/^rp\.?\s*/i, "").split(/[,.]00$/)[0];
+  const digits = cleaned.replace(/[^0-9]/g, "");
+  if (!digits) return 0;
+
+  const parsed = parseInt(digits, 10);
+  return isNaN(parsed) || parsed <= 0 ? 0 : parsed;
 }
+
+export const parseRupiah = parseRupToInt;
